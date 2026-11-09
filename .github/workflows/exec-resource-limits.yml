@@ -1,0 +1,132 @@
+name: Exec resource limits
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/exec-resource-limits.yml
+      - extensions/codex/src/app-server/**
+      - src/agents/agent-tools.ts
+      - src/agents/bash-tools.exec*
+      - src/config/config.exec-resource-limits.test.ts
+      - src/config/schema.help.ts
+      - src/config/schema.labels.ts
+      - src/config/types.tools.ts
+      - src/config/zod-schema.agent-runtime.ts
+      - src/infra/diagnostic-events.ts
+      - src/process/supervisor/**
+      - docs/tools/exec.md
+  push:
+    paths:
+      - .github/workflows/exec-resource-limits.yml
+      - extensions/codex/src/app-server/**
+      - src/agents/agent-tools.ts
+      - src/agents/bash-tools.exec*
+      - src/config/config.exec-resource-limits.test.ts
+      - src/config/schema.help.ts
+      - src/config/schema.labels.ts
+      - src/config/types.tools.ts
+      - src/config/zod-schema.agent-runtime.ts
+      - src/infra/diagnostic-events.ts
+      - src/process/supervisor/**
+      - docs/tools/exec.md
+
+permissions:
+  contents: read
+
+concurrency:
+  group: exec-resource-limits-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  OPENCLAW_VITEST_MAX_WORKERS: "2"
+  PNPM_CONFIG_CHILD_CONCURRENCY: "2"
+  PNPM_CONFIG_NETWORK_CONCURRENCY: "4"
+  OXLINT_THREADS: "2"
+
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node-env
+        with:
+          node-version: 24.x
+          install-bun: "false"
+          use-actions-cache: "false"
+      - name: Format changed source and retain corrections
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+            BASE_SHA=$(git rev-parse HEAD^)
+          fi
+          mapfile -d '' changed < <(git diff --name-only -z --diff-filter=ACMR "$BASE_SHA" HEAD)
+          files=()
+          for file in "${changed[@]}"; do
+            case "$file" in
+              *.ts|*.md|*.yml) files+=("$file") ;;
+            esac
+          done
+          if ((${#files[@]})); then
+            pnpm exec oxfmt --write --threads=1 -- "${files[@]}"
+          fi
+          git diff --binary > /tmp/exec-resource-limits-format.patch
+      - name: Focused regression tests
+        run: >-
+          pnpm test
+          src/process/supervisor/adapters/systemd-user.test.ts
+          src/process/supervisor/supervisor.test.ts
+          src/agents/bash-tools.exec-runtime.test.ts
+          src/agents/bash-tools.exec-host-gateway.test.ts
+          src/agents/bash-tools.exec.security-floor.test.ts
+          src/config/config.exec-resource-limits.test.ts
+          extensions/codex/src/app-server/dynamic-tool-build.test.ts
+          extensions/codex/src/app-server/native-execution-policy.test.ts
+          extensions/codex/src/app-server/thread-lifecycle.test.ts
+      - name: Core type checks
+        if: ${{ !cancelled() }}
+        run: pnpm tsgo:core
+      - name: Plugin type checks
+        if: ${{ !cancelled() }}
+        run: pnpm tsgo:extensions
+      - name: Lint changed core and plugin files
+        if: ${{ !cancelled() }}
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
+            BASE_SHA=$(git rev-parse HEAD^)
+          fi
+          mapfile -d '' changed < <(git diff --name-only -z --diff-filter=ACMR "$BASE_SHA" HEAD -- '*.ts')
+          core=()
+          plugins=()
+          for file in "${changed[@]}"; do
+            case "$file" in
+              src/*) core+=("$file") ;;
+              extensions/*) plugins+=("$file") ;;
+            esac
+          done
+          if ((${#core[@]})); then
+            node scripts/run-oxlint.mjs --tsconfig config/tsconfig/oxlint.core.json "${core[@]}"
+          fi
+          if ((${#plugins[@]})); then
+            node scripts/run-oxlint.mjs --tsconfig config/tsconfig/oxlint.extensions.json "${plugins[@]}"
+          fi
+      - name: Require committed formatting
+        if: ${{ !cancelled() }}
+        run: git diff --exit-code
+      - name: Upload formatting corrections
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: exec-resource-limits-format
+          path: /tmp/exec-resource-limits-format.patch
+          if-no-files-found: ignore
+          retention-days: 3

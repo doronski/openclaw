@@ -71,6 +71,8 @@ import type { AgentToolResult } from "./runtime/index.js";
 
 /** Full input bundle for gateway-host allowlist and approval processing. */
 type ProcessGatewayAllowlistParams = {
+  resourceLimits?: Parameters<typeof runExecProcess>[0]["resourceLimits"];
+  toolCallId?: string;
   command: string;
   workdir: string;
   env: Record<string, string>;
@@ -953,6 +955,8 @@ export async function processGatewayAllowlist(
       let run: Awaited<ReturnType<typeof runExecProcess>> | null;
       try {
         run = await runExecProcess({
+          resourceLimits: params.resourceLimits,
+          toolCallId: params.toolCallId,
           command: params.command,
           execCommand: enforcedCommand,
           workdir: params.workdir,

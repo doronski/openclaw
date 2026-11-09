@@ -552,7 +552,25 @@ const ToolExecSafeBinProfileSchema = z
   })
   .strict();
 
+const ToolExecResourceLimitsSchema = z
+  .object({
+    backend: z.literal("systemd-user"),
+    slice: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*\.slice$/),
+    memoryHighBytes: z.number().int().positive().safe().optional(),
+    memoryMaxBytes: z.number().int().positive().safe().optional(),
+    memorySwapMaxBytes: z.number().int().nonnegative().safe().optional(),
+    tasksMax: z.number().int().positive().safe().optional(),
+    timeoutSec: z.number().int().positive().max(2_147_483).optional(),
+    killGraceSec: z.number().int().positive().max(2_147_483).optional(),
+  })
+  .strict()
+  .refine(
+    (value) => (value.memoryHighBytes ?? 1_073_741_824) <= (value.memoryMaxBytes ?? 2_147_483_648),
+    { message: "resourceLimits memoryHighBytes must not exceed memoryMaxBytes" },
+  );
+
 const ToolExecBaseShape = {
+  resourceLimits: ToolExecResourceLimitsSchema.optional(),
   host: z.enum(["auto", "sandbox", "gateway", "node"]).optional(),
   mode: z.enum(["deny", "allowlist", "ask", "auto", "full"]).optional(),
   security: z.enum(["deny", "allowlist", "full"]).optional(),

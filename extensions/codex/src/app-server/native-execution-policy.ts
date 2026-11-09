@@ -12,6 +12,7 @@ type ExecTarget = "auto" | ExecHost;
 type ExecHostOverride = {
   host?: string;
   node?: string;
+  resourceLimits?: NonNullable<NonNullable<OpenClawConfig["tools"]>["exec"]>["resourceLimits"];
 };
 
 type AgentEntry = NonNullable<NonNullable<OpenClawConfig["agents"]>["list"]>[number];
@@ -29,6 +30,7 @@ export type CodexNativeExecutionPolicy = {
   effectiveExecHost: ExecHost;
   node?: string;
   blockReason?: string;
+  resourceLimitsRequired?: true;
 };
 
 /** Resolves node/gateway/sandbox execution ownership from overrides, session, agent, and config. */
@@ -75,6 +77,17 @@ export function resolveCodexNativeExecutionPolicy(params: {
   });
   const node =
     params.execOverrides?.node ?? sessionEntry?.execNode ?? agentExec?.node ?? globalExec?.node;
+  const resourceLimits = agentExec?.resourceLimits ?? globalExec?.resourceLimits;
+  if (resourceLimits) {
+    return {
+      nativeToolSurfaceAllowed: false,
+      resourceLimitsRequired: true,
+      requestedExecHost,
+      effectiveExecHost,
+      node,
+      blockReason: "OpenClaw exec resourceLimits requires OpenClaw-owned command execution.",
+    };
+  }
   if (effectiveExecHost !== "node") {
     return {
       nativeToolSurfaceAllowed: true,
@@ -97,7 +110,11 @@ export function resolveCodexNativeExecutionPolicy(params: {
 export function formatCodexNativeNodeExecBlock(params: {
   surface: string;
   reason?: string;
+  resourceLimitsRequired?: true;
 }): string {
+  if (params.resourceLimitsRequired) {
+    return `Codex-native ${params.surface} is unavailable because OpenClaw exec resourceLimits requires contained command ownership. Use a normal harness turn with OpenClaw-owned tools.`;
+  }
   return [
     `Codex-native ${params.surface} is unavailable because OpenClaw exec host=node is active for this session.`,
     params.reason ??

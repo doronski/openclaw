@@ -104,10 +104,17 @@ export function filterCodexDynamicTools<T extends { name: string }>(
   tools: T[],
   config: Pick<CodexPluginConfig, "codexDynamicToolsExclude">,
   env: CodexDynamicToolProfileEnv = process.env,
+  options: { openClawExecution?: boolean } = {},
 ): T[] {
   const excludes = new Set<string>();
   if (!isForcedPrivateQaCodexRuntime(env)) {
     for (const name of CODEX_APP_SERVER_OWNED_DYNAMIC_TOOL_EXCLUDES) {
+      if (
+        options.openClawExecution &&
+        ["read", "write", "edit", "apply_patch", "exec", "process"].includes(name)
+      ) {
+        continue;
+      }
       excludes.add(name);
     }
   }

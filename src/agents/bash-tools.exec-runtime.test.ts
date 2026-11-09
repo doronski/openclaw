@@ -744,3 +744,39 @@ describe("runExecProcess POSIX command wrapper", () => {
     expect(commandStr).toContain("echo test");
   });
 });
+
+
+describe("resource-limited exec runtime", () => {
+  it("forwards limits and tool identity, caps the deadline, and skips uncontained shell snapshot capture", async () => {
+    const snapshots = await import("./shell-snapshot.js");
+    const snapshotSpy = vi.spyOn(snapshots, "maybeWrapCommandWithShellSnapshot");
+    supervisorMock.spawn.mockResolvedValueOnce({
+      runId: "contained-run", startedAtMs: Date.now(),
+      wait: async () => ({ reason: "exit", exitCode: 0, exitSignal: null, durationMs: 0,
+        stdout: "", stderr: "", timedOut: false, noOutputTimedOut: false }),
+      cancel: vi.fn(),
+    });
+    const resourceLimits = { backend: "systemd-user" as const, slice: "commands.slice" };
+    try {
+      const run = await runExecProcess({
+        command: "true", workdir: "/tmp", env: {}, usePty: false, warnings: [],
+        maxOutput: 1000, pendingMaxOutput: 1000, notifyOnExit: false,
+        timeoutSec: 300, toolCallId: "tool-1", resourceLimits,
+      });
+      await run.promise;
+      expect(supervisorMock.spawn).toHaveBeenCalledWith(expect.objectContaining({
+        resourceLimits, toolCallId: "tool-1", timeoutMs: 60_000,
+      }));
+      expect(snapshotSpy).not.toHaveBeenCalled();
+    } finally { snapshotSpy.mockRestore(); }
+  });
+
+  it("rejects sandbox and PTY before spawning under a resource policy", async () => {
+    await expect(runExecProcess({
+      command: "true", workdir: "/tmp", env: {}, usePty: true, warnings: [],
+      maxOutput: 1000, pendingMaxOutput: 1000, notifyOnExit: false, timeoutSec: null,
+      resourceLimits: { backend: "systemd-user", slice: "commands.slice" },
+    })).rejects.toThrow("cannot contain sandbox or PTY");
+    expect(supervisorMock.spawn).not.toHaveBeenCalled();
+  });
+});

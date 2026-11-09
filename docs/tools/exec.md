@@ -114,6 +114,63 @@ Example:
 }
 ```
 
+### Linux command resource limits
+
+Set `tools.exec.resourceLimits` to run gateway commands in separate systemd user
+services with a shared aggregate workload budget. Leave it unset to keep the
+existing execution behavior. This requires Linux, cgroup v2, systemd 254 or newer,
+`/usr/bin/systemctl`, `/usr/bin/systemd-run`, and a reachable user manager.
+
+Provision and review a dedicated user workload slice first. The slice must be
+active and its actual cgroup `memory.max` and `pids.max` must be finite. Keep the
+gateway and model runner outside this slice. OpenClaw checks the slice and never
+creates it or changes its budget.
+
+```json5
+{
+  tools: {
+    exec: {
+      host: "gateway",
+      resourceLimits: {
+        backend: "systemd-user",
+        slice: "commands.slice",
+        memoryHighBytes: 1073741824,
+        memoryMaxBytes: 2147483648,
+        memorySwapMaxBytes: 0,
+        tasksMax: 128,
+        timeoutSec: 60,
+        killGraceSec: 5,
+      },
+    },
+  },
+}
+```
+
+The values above are the defaults after enabling this policy; `backend` and
+`slice` are required. Memory sizes are integer bytes, and `memoryHighBytes` cannot
+exceed `memoryMaxBytes`. The service deadline remains in effect after backgrounding.
+A per-call `timeout` can shorten this deadline, but `timeout: 0` or a longer timeout
+cannot raise it. Use an operator-configured `agents.list[].tools.exec.resourceLimits`
+override for a deliberately larger job role.
+
+Existing authorization, allowlists, and approvals still apply. Node, sandbox,
+elevated, and PTY execution are refused while the policy is configured. An
+unavailable user manager or an unbudgeted slice fails closed. Shell snapshot
+capture is skipped because it starts a separate shell; shell startup executes
+inside the command service instead.
+
+Configured Codex turns disable the native execution environment and expose the
+allowed OpenClaw shell and filesystem tools instead. Tool allowlists and plugin
+exclusions still apply. Cancellation, including cancellation after backgrounding,
+stops the service; completion verifies that the command cgroup has no remaining
+descendants. Termination sends TERM, then KILL after the configured grace period.
+
+`exec.process.containment` diagnostics associate the session and tool call with
+the service, cgroup, times, exit result, and observed child PID and memory peak.
+Very short successful units may unload before PID or peak observation; those
+fields are omitted. These events do not contain command bodies or environment
+values. Resource budgets do not replace sandbox isolation or permission policy.
+
 ### Modes
 
 `tools.exec.mode` is the normalized policy knob. Setting it derives `security`/`ask` and cannot be combined with explicit `tools.exec.security`/`tools.exec.ask`.

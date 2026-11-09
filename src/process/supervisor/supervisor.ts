@@ -6,6 +6,7 @@ import { getShellConfig } from "../../agents/shell-utils.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { createChildAdapter } from "./adapters/child.js";
 import { createPtyAdapter } from "./adapters/pty.js";
+import { createSystemdUserAdapter } from "./adapters/systemd-user.js";
 import { createRunRegistry } from "./registry.js";
 import type {
   ManagedRun,
@@ -184,6 +185,9 @@ export function createProcessSupervisor(): ProcessSupervisor {
       if (input.mode === "child" && input.argv.length === 0) {
         throw new Error("spawn argv cannot be empty");
       }
+      if (input.resourceLimits && input.mode !== "child") {
+        throw new Error("systemd-user resource containment does not support PTY execution");
+      }
       const adapter =
         input.mode === "pty"
           ? await (async () => {
@@ -199,7 +203,9 @@ export function createProcessSupervisor(): ProcessSupervisor {
                 env: input.env,
               });
             })()
-          : await createChildAdapter({
+          : input.resourceLimits
+            ? await createSystemdUserAdapter({ ...input, runId })
+            : await createChildAdapter({
               argv: input.argv,
               cwd: input.cwd,
               env: input.env,
@@ -273,7 +279,7 @@ export function createProcessSupervisor(): ProcessSupervisor {
           overallTimeoutDeadlineMs,
           noOutputTimeoutDeadlineMs,
         });
-        const terminalReason = forcedReason ?? deadlineReason;
+        const terminalReason = forcedReason ?? result.reason ?? deadlineReason;
         if (settled) {
           return {
             reason: terminalReason ?? "exit",

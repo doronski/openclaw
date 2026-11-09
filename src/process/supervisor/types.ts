@@ -1,3 +1,5 @@
+import type { ExecResourceLimitsConfig } from "../../config/types.tools.js";
+
 // Process supervisor types describe supervised runs, states, and termination reasons.
 export type RunState = "starting" | "running" | "exiting" | "exited";
 
@@ -63,12 +65,14 @@ export type SpawnProcessAdapter<WaitSignal = NodeJS.Signals | number | null> = {
   stdin?: ManagedRunStdin;
   onStdout: (listener: (chunk: string) => void) => void;
   onStderr: (listener: (chunk: string) => void) => void;
-  wait: () => Promise<{ code: number | null; signal: WaitSignal }>;
+  wait: () => Promise<{ code: number | null; signal: WaitSignal; reason?: TerminationReason }>;
   kill: (signal?: NodeJS.Signals) => void;
   dispose: () => void;
 };
 
 type SpawnBaseInput = {
+  resourceLimits?: ExecResourceLimitsConfig;
+  toolCallId?: string;
   runId?: string;
   sessionId: string;
   backendId: string;

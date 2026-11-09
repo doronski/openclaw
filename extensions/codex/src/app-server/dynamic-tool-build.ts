@@ -334,7 +334,9 @@ export async function buildDynamicTools(input: DynamicToolBuildParams) {
     addSandboxShellDynamicToolsIfAvailable(
       isCodexMemoryFlushRun(params)
         ? filterCodexMemoryFlushDynamicTools(readableAllTools)
-        : filterCodexDynamicTools(readableAllTools, input.pluginConfig),
+        : filterCodexDynamicTools(readableAllTools, input.pluginConfig, process.env, {
+            openClawExecution: nativeExecutionPolicy.resourceLimitsRequired,
+          }),
       readableAllTools,
       input,
     ),
@@ -478,6 +480,17 @@ export function shouldEnableCodexAppServerNativeToolSurface(
   } = {},
 ): boolean {
   if (isCodexMemoryFlushRun(params)) {
+    return false;
+  }
+  const executionPolicy = resolveCodexNativeExecutionPolicy({
+    config: params.config,
+    agentId: options.agentId,
+    sessionKey: resolveCodexRuntimePolicySessionKey(params, options.runtimeSessionKey),
+    sessionId: params.sessionId,
+    execOverrides: params.execOverrides,
+    sandboxAvailable: sandbox?.enabled,
+  });
+  if (executionPolicy.resourceLimitsRequired) {
     return false;
   }
   const toolsAllow = includeForcedCodexDynamicToolAllow(params.toolsAllow, params);
@@ -763,7 +776,7 @@ function addNodeShellDynamicToolsIfNeeded(
   if (isCodexMemoryFlushRun(input.params)) {
     return filteredTools;
   }
-  if (nodePolicy.effectiveExecHost !== "node") {
+  if (nodePolicy.resourceLimitsRequired || nodePolicy.effectiveExecHost !== "node") {
     return filteredTools;
   }
   const execTool = allTools.find((tool) => normalizeCodexDynamicToolName(tool.name) === "exec");

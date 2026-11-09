@@ -1562,7 +1562,7 @@ export function createExecTool(
       }
       return execParams;
     },
-    execute: async (_toolCallId, args, signal, onUpdate) => {
+    execute: async (toolCallId, args, signal, onUpdate) => {
       let params = stripMalformedXmlArgValueSuffixFromKeys(
         args as ExecToolArgs,
         XML_ARG_VALUE_EXEC_PARAM_KEYS,
@@ -1661,6 +1661,12 @@ export function createExecTool(
         sandboxAvailable: Boolean(defaults?.sandbox),
       });
       const host: ExecHost = target.effectiveHost;
+      const resourceLimits = defaults?.resourceLimits;
+      if (resourceLimits && (host !== "gateway" || elevatedRequested || params.pty === true)) {
+        throw new Error(
+          "exec resourceLimits requires non-elevated gateway execution without PTY; refusing an uncontained pathway",
+        );
+      }
 
       const explicitSecurity = defaults?.security;
       const configuredSecurity = explicitSecurity ?? (host === "sandbox" ? "deny" : "full");
@@ -1899,6 +1905,8 @@ export function createExecTool(
 
         if (host === "gateway" && !bypassApprovals) {
           const gatewayResult = await processGatewayAllowlist({
+            resourceLimits,
+            toolCallId,
             command: params.command,
             workdir,
             env,
@@ -1969,6 +1977,8 @@ export function createExecTool(
         }
 
         run = await runExecProcess({
+          resourceLimits,
+          toolCallId,
           command: params.command,
           execCommand: execCommandOverride,
           workdir,
@@ -2001,7 +2011,8 @@ export function createExecTool(
       let yieldTimer: NodeJS.Timeout | null = null;
       let registeredAbortSignal: AbortSignal | null = null;
 
-      // Tool-call abort should not kill backgrounded sessions; timeouts still must.
+      // Contained commands keep cancellation ownership after backgrounding;
+      // ordinary background sessions retain their existing detached lifecycle.
       const onAbortSignal = () => {
         // Immediately suppress onUpdate calls so that any late stdout/stderr
         // from the still-running process cannot push a rejected Promise into
@@ -2011,14 +2022,14 @@ export function createExecTool(
         // tool_execution_update events even for backgrounded sessions (which
         // retrieve output via process poll/log instead of onUpdate callbacks).
         run.disableUpdates();
-        if (yielded || run.session.backgrounded) {
+        if (!resourceLimits && (yielded || run.session.backgrounded)) {
           return;
         }
         run.kill();
       };
 
       const cleanupToolRunListeners = () => {
-        if (registeredAbortSignal) {
+        if (registeredAbortSignal && (!resourceLimits || run.session.exited)) {
           registeredAbortSignal.removeEventListener("abort", onAbortSignal);
           registeredAbortSignal = null;
         }

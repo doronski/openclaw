@@ -1584,9 +1584,12 @@ EOF`,
     });
     buildExecApprovalFollowupTargetMock.mockImplementation((value) => value);
 
+    const resourceLimits = { backend: "systemd-user" as const, slice: "commands.slice" };
     const result = await runGatewayAllowlist({
       command: "find . -maxdepth 1",
       turnSourceChannel: "feishu",
+      resourceLimits,
+      toolCallId: "approved-tool-call",
     });
 
     expect(result.pendingResult?.details.status).toBe("approval-pending");
@@ -1594,6 +1597,9 @@ EOF`,
       expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledTimes(1);
     });
     expect(runExecProcessMock).toHaveBeenCalledTimes(1);
+    expect(runExecProcessMock).toHaveBeenCalledWith(expect.objectContaining({
+      resourceLimits, toolCallId: "approved-tool-call",
+    }));
   });
 
   it("keeps the fire-and-forget path for headless cron approval followups", async () => {

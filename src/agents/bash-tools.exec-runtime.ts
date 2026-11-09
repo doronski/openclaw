@@ -1,4 +1,5 @@
 import path from "node:path";
+import type { ExecResourceLimitsConfig } from "../config/types.tools.js";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { emitDiagnosticEvent } from "../infra/diagnostic-events.js";
@@ -579,6 +580,8 @@ function wrapPosixCommandWithPathPrepend(
 
 /** Starts a host or sandbox exec process and registers it for polling/backgrounding. */
 export async function runExecProcess(opts: {
+  resourceLimits?: ExecResourceLimitsConfig;
+  toolCallId?: string;
   command: string;
   // Execute this instead of `command` (which is kept for display/session/logging).
   // Used to sanitize safeBins execution while preserving the original user input.
@@ -611,6 +614,9 @@ export async function runExecProcess(opts: {
   timeoutSec: number | null;
   onUpdate?: (partialResult: AgentToolResult<ExecToolDetails>) => void;
 }): Promise<ExecProcessHandle> {
+  if (opts.resourceLimits && (opts.sandbox || opts.usePty)) {
+    throw new Error("exec resourceLimits cannot contain sandbox or PTY execution");
+  }
   const startedAt = Date.now();
   const sessionId = createSessionSlug();
   const execCommand = opts.execCommand ?? opts.command;
@@ -719,7 +725,10 @@ export async function runExecProcess(opts: {
     }
   };
 
-  const timeoutMs = resolveExecTimeoutMs(opts.timeoutSec);
+  const requestedTimeoutMs = resolveExecTimeoutMs(opts.timeoutSec);
+  const timeoutMs = opts.resourceLimits
+    ? Math.min(requestedTimeoutMs ?? Infinity, (opts.resourceLimits.timeoutSec ?? 60) * 1000)
+    : requestedTimeoutMs;
   let sandboxFinalizeToken: unknown;
   let sandboxFinalized = false;
   const finalizeSandboxExec = async (params: {
@@ -785,13 +794,17 @@ export async function runExecProcess(opts: {
       shellRuntimeEnv,
       opts.pathPrepend,
     );
-    const commandWithShellSnapshot = await maybeWrapCommandWithShellSnapshot({
-      command: commandWithPathPrepend,
-      shell,
-      shellArgs,
-      cwd: opts.workdir,
-      env: shellRuntimeEnv,
-    });
+    // Snapshot capture itself spawns a login shell outside the supervisor.
+    // Resource-limited commands must keep shell startup inside their service.
+    const commandWithShellSnapshot = opts.resourceLimits
+      ? commandWithPathPrepend
+      : await maybeWrapCommandWithShellSnapshot({
+          command: commandWithPathPrepend,
+          shell,
+          shellArgs,
+          cwd: opts.workdir,
+          env: shellRuntimeEnv,
+        });
 
     const childArgv = [shell, ...shellArgs, commandWithShellSnapshot];
     if (opts.usePty) {
@@ -832,6 +845,8 @@ export async function runExecProcess(opts: {
   try {
     const spawnBase = {
       runId: sessionId,
+      resourceLimits: opts.resourceLimits,
+      toolCallId: opts.toolCallId,
       sessionId: opts.sessionKey?.trim() || sessionId,
       backendId: opts.sandbox ? "exec-sandbox" : "exec-host",
       scopeKey: opts.scopeKey,
