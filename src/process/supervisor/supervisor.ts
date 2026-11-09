@@ -231,6 +231,9 @@ export function createProcessSupervisor(): ProcessSupervisor {
         }
       };
 
+      const gracefulCancelTimeoutMs = input.resourceLimits?.killGraceSec
+        ? input.resourceLimits.killGraceSec * 1000
+        : GRACEFUL_CANCEL_TIMEOUT_MS;
       cancelAdapter = (_reason: TerminationReason) => {
         if (settled || forceKillTimer) {
           return;
@@ -240,7 +243,7 @@ export function createProcessSupervisor(): ProcessSupervisor {
           if (!settled) {
             adapter.kill("SIGKILL");
           }
-        }, GRACEFUL_CANCEL_TIMEOUT_MS);
+        }, gracefulCancelTimeoutMs);
         forceKillTimer.unref?.();
       };
 

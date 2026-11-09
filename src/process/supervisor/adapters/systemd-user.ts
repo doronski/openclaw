@@ -105,7 +105,10 @@ async function requireWorkloadSlice(slice: string): Promise<string> {
     throw new Error("exec resourceLimits requires an active, preconfigured workload slice");
   }
   const selfMembership = await fs.readFile("/proc/self/cgroup", "utf8");
-  const selfCgroup = selfMembership.split("\n").find((line) => line.startsWith("0::"))?.slice(3);
+  const selfCgroup = selfMembership
+    .split("\n")
+    .find((line) => line.startsWith("0::"))
+    ?.slice(3);
   if (!selfCgroup) {
     throw new Error("exec resourceLimits requires a verifiable cgroup v2 owner");
   }
@@ -122,7 +125,9 @@ async function requireWorkloadSlice(slice: string): Promise<string> {
     readCgroup(directory, "pids.max"),
   ]);
   if (![memory, tasks].every((value) => value && /^[1-9][0-9]*$/.test(value))) {
-    throw new Error("exec workload slice requires finite cgroup v2 memory.max and pids.max budgets");
+    throw new Error(
+      "exec workload slice requires finite cgroup v2 memory.max and pids.max budgets",
+    );
   }
   return properties.ControlGroup;
 }
@@ -237,7 +242,10 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
   let controlFailure = false;
   const stop = (): Promise<void> => {
     stopPromise ??= (async () => {
-      const stopped = await control(["stop", unit], limits.killGraceSec * 1000 + CONTROL_TIMEOUT_MS);
+      const stopped = await control(
+        ["stop", unit],
+        limits.killGraceSec * 1000 + CONTROL_TIMEOUT_MS,
+      );
       if (!stopped.ok) {
         const properties = await show(unit);
         if (
@@ -283,7 +291,11 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
       controlFailure = true;
     }
   };
-  const trace = (phase: "started" | "completed", exitCode: number | null, cleanupVerified?: boolean) => {
+  const trace = (
+    phase: "started" | "completed",
+    exitCode: number | null,
+    cleanupVerified?: boolean,
+  ) => {
     emitDiagnosticEvent({
       type: "exec.process.containment",
       phase,

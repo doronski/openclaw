@@ -172,7 +172,9 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
     "refuses a workload slice containing the gateway owner (%s)",
     async (owner) => {
       selfCgroup = owner;
-      await expect(createSystemdUserAdapter(input())).rejects.toThrow("must not contain the gateway");
+      await expect(createSystemdUserAdapter(input())).rejects.toThrow(
+        "must not contain the gateway",
+      );
       expect(mocks.createChildAdapter).not.toHaveBeenCalled();
     },
   );

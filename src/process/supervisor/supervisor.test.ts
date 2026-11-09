@@ -234,8 +234,9 @@ describe("process supervisor", () => {
     expect(exit.timedOut).toBe(true);
   });
 
-  it("escalates cancellation to SIGKILL when graceful shutdown does not settle", async () => {
+  it.each([false, true])("honors cancellation grace (contained=%s)", async (contained) => {
     vi.useFakeTimers();
+    const graceMs = contained ? 8_000 : 5_000;
     const adapter = createStubChildAdapter({
       onKill: (signal, current) => {
         if (signal === "SIGKILL") {
@@ -243,7 +244,11 @@ describe("process supervisor", () => {
         }
       },
     });
-    createChildAdapterMock.mockResolvedValue(adapter);
+    if (contained) {
+      createSystemdUserAdapterMock.mockResolvedValue(adapter);
+    } else {
+      createChildAdapterMock.mockResolvedValue(adapter);
+    }
 
     const supervisor = createProcessSupervisor();
     const run = await spawnChild(supervisor, {
@@ -251,6 +256,15 @@ describe("process supervisor", () => {
       argv: createSilentIdleArgv(),
       timeoutMs: 1_000,
       stdinMode: "pipe-closed",
+      ...(contained
+        ? {
+            resourceLimits: {
+              backend: "systemd-user" as const,
+              slice: "commands.slice",
+              killGraceSec: graceMs / 1000,
+            },
+          }
+        : {}),
     });
 
     const exitPromise = run.wait();
@@ -259,7 +273,7 @@ describe("process supervisor", () => {
     expect(adapter.killMock).toHaveBeenCalledWith("SIGTERM");
     expect(adapter.killMock).not.toHaveBeenCalledWith("SIGKILL");
 
-    await vi.advanceTimersByTimeAsync(4_999);
+    await vi.advanceTimersByTimeAsync(graceMs - 1);
     expect(adapter.killMock).not.toHaveBeenCalledWith("SIGKILL");
 
     await vi.advanceTimersByTimeAsync(1);
