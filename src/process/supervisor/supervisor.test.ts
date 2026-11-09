@@ -3,11 +3,13 @@ import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SpawnProcessAdapter } from "./types.js";
 
-const { createChildAdapterMock, createPtyAdapterMock, createSystemdUserAdapterMock } = vi.hoisted(() => ({
-  createChildAdapterMock: vi.fn(),
-  createPtyAdapterMock: vi.fn(),
-  createSystemdUserAdapterMock: vi.fn(),
-}));
+const { createChildAdapterMock, createPtyAdapterMock, createSystemdUserAdapterMock } = vi.hoisted(
+  () => ({
+    createChildAdapterMock: vi.fn(),
+    createPtyAdapterMock: vi.fn(),
+    createSystemdUserAdapterMock: vi.fn(),
+  }),
+);
 
 vi.mock("./adapters/child.js", () => ({
   createChildAdapter: createChildAdapterMock,
@@ -125,12 +127,21 @@ describe("process supervisor", () => {
     const resourceLimits = { backend: "systemd-user" as const, slice: "commands.slice" };
     const run = await spawnChild(supervisor, {
       argv: ["/bin/sh", "-c", "printf output"],
-      sessionId: "session-1", runId: "run-1", toolCallId: "tool-1",
-      cwd: "/workspace", resourceLimits, maxCapturedOutputChars: 256,
+      sessionId: "session-1",
+      runId: "run-1",
+      toolCallId: "tool-1",
+      cwd: "/workspace",
+      resourceLimits,
+      maxCapturedOutputChars: 256,
     });
-    expect(createSystemdUserAdapterMock).toHaveBeenCalledWith(expect.objectContaining({
-      resourceLimits, runId: "run-1", toolCallId: "tool-1", sessionId: "session-1",
-    }));
+    expect(createSystemdUserAdapterMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resourceLimits,
+        runId: "run-1",
+        toolCallId: "tool-1",
+        sessionId: "session-1",
+      }),
+    );
     expect(createChildAdapterMock).not.toHaveBeenCalled();
     adapter.emitStdout("x".repeat(1000));
     adapter.settle(0);
@@ -141,18 +152,27 @@ describe("process supervisor", () => {
 
   it("does not fall back when a configured containment backend fails", async () => {
     createSystemdUserAdapterMock.mockRejectedValue(new Error("backend unavailable"));
-    await expect(spawnChild(createProcessSupervisor(), {
-      argv: ["/bin/true"], sessionId: "session-1", cwd: "/workspace",
-      resourceLimits: { backend: "systemd-user", slice: "commands.slice" },
-    })).rejects.toThrow("backend unavailable");
+    await expect(
+      spawnChild(createProcessSupervisor(), {
+        argv: ["/bin/true"],
+        sessionId: "session-1",
+        cwd: "/workspace",
+        resourceLimits: { backend: "systemd-user", slice: "commands.slice" },
+      }),
+    ).rejects.toThrow("backend unavailable");
     expect(createChildAdapterMock).not.toHaveBeenCalled();
   });
 
   it("refuses PTY without retrying outside configured containment", async () => {
-    await expect(createProcessSupervisor().spawn({
-      mode: "pty", backendId: "exec-host", ptyCommand: "true", sessionId: "session-1",
-      resourceLimits: { backend: "systemd-user", slice: "commands.slice" },
-    })).rejects.toThrow("does not support PTY");
+    await expect(
+      createProcessSupervisor().spawn({
+        mode: "pty",
+        backendId: "exec-host",
+        ptyCommand: "true",
+        sessionId: "session-1",
+        resourceLimits: { backend: "systemd-user", slice: "commands.slice" },
+      }),
+    ).rejects.toThrow("does not support PTY");
     expect(createPtyAdapterMock).not.toHaveBeenCalled();
     expect(createChildAdapterMock).not.toHaveBeenCalled();
   });

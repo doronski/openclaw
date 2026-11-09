@@ -51,7 +51,8 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 2
           persist-credentials: false
       - uses: ./.github/actions/setup-node-env
         with:
@@ -65,6 +66,9 @@ jobs:
           set -euo pipefail
           if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
             BASE_SHA=$(git rev-parse HEAD^)
+          fi
+          if ! git cat-file -e "$BASE_SHA^{commit}"; then
+            git -c pack.threads=2 -c pack.windowMemory=128m fetch --no-tags --depth=1 origin "$BASE_SHA"
           fi
           mapfile -d '' changed < <(git diff --name-only -z --diff-filter=ACMR "$BASE_SHA" HEAD)
           files=()
@@ -104,6 +108,9 @@ jobs:
           if [[ ! "$BASE_SHA" =~ ^[0-9a-f]{40}$ || "$BASE_SHA" == "0000000000000000000000000000000000000000" ]]; then
             BASE_SHA=$(git rev-parse HEAD^)
           fi
+          if ! git cat-file -e "$BASE_SHA^{commit}"; then
+            git -c pack.threads=2 -c pack.windowMemory=128m fetch --no-tags --depth=1 origin "$BASE_SHA"
+          fi
           mapfile -d '' changed < <(git diff --name-only -z --diff-filter=ACMR "$BASE_SHA" HEAD -- '*.ts')
           core=()
           plugins=()
@@ -130,3 +137,47 @@ jobs:
           path: /tmp/exec-resource-limits-format.patch
           if-no-files-found: ignore
           retention-days: 3
+
+  package:
+    needs: focused
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      NODE_OPTIONS: --max-old-space-size=16384
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - uses: ./.github/actions/setup-node-env
+        with:
+          node-version: 24.x
+          install-bun: "true"
+          use-actions-cache: "false"
+      - name: Build and validate core package through the maintained package workflow
+        run: >-
+          node scripts/package-openclaw-for-docker.mjs
+          --output-dir .artifacts/exec-resource-limits/core
+          --pack-json .artifacts/exec-resource-limits/core-pack.json
+      - name: Upload exact-source core candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: exec-resource-limits-core-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            .artifacts/exec-resource-limits/core/*.tgz
+            .artifacts/exec-resource-limits/core-pack.json
+            dist/build-info.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Build and pack the separate Codex plugin without publishing
+        env:
+          OPENCLAW_PLUGIN_NPM_PACK_OUTPUT_DIR: .artifacts/exec-resource-limits/codex
+        run: bash scripts/plugin-npm-publish.sh --pack extensions/codex
+      - name: Upload exact-source Codex candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: exec-resource-limits-codex-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .artifacts/exec-resource-limits/codex/*.tgz
+          if-no-files-found: error
+          retention-days: 7

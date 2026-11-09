@@ -6,7 +6,18 @@ describe("exec resourceLimits config", () => {
     const limits = { backend: "systemd-user", slice: "commands.slice" };
     const result = validateConfigObject({
       tools: { exec: { resourceLimits: limits } },
-      agents: { list: [{ id: "large-jobs", tools: { exec: { resourceLimits: { ...limits, memoryMaxBytes: 8_589_934_592, timeoutSec: 300 } } } }] },
+      agents: {
+        list: [
+          {
+            id: "large-jobs",
+            tools: {
+              exec: {
+                resourceLimits: { ...limits, memoryMaxBytes: 8_589_934_592, timeoutSec: 300 },
+              },
+            },
+          },
+        ],
+      },
     });
     expect(result.ok).toBe(true);
   });

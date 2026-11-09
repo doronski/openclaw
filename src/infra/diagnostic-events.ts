@@ -509,6 +509,7 @@ export type DiagnosticExecProcessContainmentEvent = DiagnosticBaseEvent & {
   childPid?: number;
   startedAtMs: number;
   endedAtMs?: number;
+  cleanupVerified?: boolean;
   memoryPeakBytes?: number;
   result?: string;
   exitCode: number | null;

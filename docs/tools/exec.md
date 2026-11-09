@@ -123,8 +123,10 @@ existing execution behavior. This requires Linux, cgroup v2, systemd 254 or newe
 
 Provision and review a dedicated user workload slice first. The slice must be
 active and its actual cgroup `memory.max` and `pids.max` must be finite. Keep the
-gateway and model runner outside this slice. OpenClaw checks the slice and never
-creates it or changes its budget.
+gateway and model runner outside this slice. OpenClaw checks the slice and refuses
+it when `/proc/self/cgroup` shows that it contains the gateway command owner.
+Placement of an independently managed model runner remains a deployment check.
+OpenClaw never creates the slice or changes its budget.
 
 ```json5
 {
@@ -168,8 +170,9 @@ descendants. Termination sends TERM, then KILL after the configured grace period
 `exec.process.containment` diagnostics associate the session and tool call with
 the service, cgroup, times, exit result, and observed child PID and memory peak.
 Very short successful units may unload before PID or peak observation; those
-fields are omitted. These events do not contain command bodies or environment
-values. Resource budgets do not replace sandbox isolation or permission policy.
+fields are omitted. Cleanup failures emit `cleanupVerified: false` and refuse
+completion; an absent path alone is not treated as successful cleanup. These
+events do not contain command bodies or environment values. Resource budgets do not replace sandbox isolation or permission policy.
 
 ### Modes
 

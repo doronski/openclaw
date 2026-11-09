@@ -1597,9 +1597,12 @@ EOF`,
       expect(sendExecApprovalFollowupResultMock).toHaveBeenCalledTimes(1);
     });
     expect(runExecProcessMock).toHaveBeenCalledTimes(1);
-    expect(runExecProcessMock).toHaveBeenCalledWith(expect.objectContaining({
-      resourceLimits, toolCallId: "approved-tool-call",
-    }));
+    expect(runExecProcessMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resourceLimits,
+        toolCallId: "approved-tool-call",
+      }),
+    );
   });
 
   it("keeps the fire-and-forget path for headless cron approval followups", async () => {

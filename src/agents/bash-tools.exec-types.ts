@@ -1,10 +1,10 @@
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 /**
  * Shared type contracts for bash exec tools.
  * Defines defaults, approval follow-up payloads, elevated policy defaults, and
  * tool result details consumed across exec hosts and process controls.
  */
 import type { ExecResourceLimitsConfig } from "../config/types.tools.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { EventSessionRoutingPolicy } from "../infra/event-session-routing.js";
 import type { ExecApprovalDecision } from "../infra/exec-approvals.js";
 import type {

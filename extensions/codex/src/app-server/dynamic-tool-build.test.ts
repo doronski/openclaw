@@ -1253,22 +1253,34 @@ describe("Codex app-server dynamic tool build", () => {
     const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
     params.disableTools = false;
     params.runtimePlan = createCodexRuntimePlanFixture();
-    params.config = { tools: { exec: { resourceLimits: { backend: "systemd-user", slice: "commands.slice" } } } };
+    params.config = {
+      tools: { exec: { resourceLimits: { backend: "systemd-user", slice: "commands.slice" } } },
+    };
     params.toolsAllow = ["exec", "process"];
     const execTool = createRuntimeDynamicTool("exec");
-    setOpenClawCodingToolsFactoryForTests(() => [execTool, createRuntimeDynamicTool("process"), createRuntimeDynamicTool("read")]);
+    setOpenClawCodingToolsFactoryForTests(() => [
+      execTool,
+      createRuntimeDynamicTool("process"),
+      createRuntimeDynamicTool("read"),
+    ]);
     const nativeToolSurfaceEnabled = shouldEnableCodexAppServerNativeToolSurface(params);
     expect(nativeToolSurfaceEnabled).toBe(false);
-    const tools = await buildDynamicToolsForTest(params, workspaceDir, { nativeToolSurfaceEnabled });
+    const tools = await buildDynamicToolsForTest(params, workspaceDir, {
+      nativeToolSurfaceEnabled,
+    });
     expect(tools.map((tool) => tool.name)).toEqual(["exec", "process"]);
     await tools[0].execute("contained-call", {}, undefined, undefined);
     expect(execTool.execute).toHaveBeenCalledWith("contained-call", {}, undefined, undefined);
-    expect(await buildDynamicToolsForTest(params, workspaceDir, {
-      nativeToolSurfaceEnabled,
-      pluginConfig: { codexDynamicToolsExclude: ["exec"] },
-    })).toEqual(expect.not.arrayContaining([expect.objectContaining({ name: "exec" })]));
+    expect(
+      await buildDynamicToolsForTest(params, workspaceDir, {
+        nativeToolSurfaceEnabled,
+        pluginConfig: { codexDynamicToolsExclude: ["exec"] },
+      }),
+    ).toEqual(expect.not.arrayContaining([expect.objectContaining({ name: "exec" })]));
     params.toolsAllow = ["message"];
-    expect(await buildDynamicToolsForTest(params, workspaceDir, { nativeToolSurfaceEnabled })).toEqual([]);
+    expect(
+      await buildDynamicToolsForTest(params, workspaceDir, { nativeToolSurfaceEnabled }),
+    ).toEqual([]);
   });
 
   it("disables Codex native tool surfaces for restricted runtime allowlists", () => {

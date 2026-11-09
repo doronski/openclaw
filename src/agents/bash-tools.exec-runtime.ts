@@ -1,7 +1,7 @@
 import path from "node:path";
-import type { ExecResourceLimitsConfig } from "../config/types.tools.js";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import type { ExecResourceLimitsConfig } from "../config/types.tools.js";
 import { emitDiagnosticEvent } from "../infra/diagnostic-events.js";
 import {
   type EventSessionRoutingPolicy,

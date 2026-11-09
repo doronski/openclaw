@@ -206,13 +206,13 @@ export function createProcessSupervisor(): ProcessSupervisor {
           : input.resourceLimits
             ? await createSystemdUserAdapter({ ...input, runId })
             : await createChildAdapter({
-              argv: input.argv,
-              cwd: input.cwd,
-              env: input.env,
-              windowsVerbatimArguments: input.windowsVerbatimArguments,
-              input: input.input,
-              stdinMode: input.stdinMode,
-            });
+                argv: input.argv,
+                cwd: input.cwd,
+                env: input.env,
+                windowsVerbatimArguments: input.windowsVerbatimArguments,
+                input: input.input,
+                stdinMode: input.stdinMode,
+              });
 
       registry.updateState(runId, "running", { pid: adapter.pid });
 

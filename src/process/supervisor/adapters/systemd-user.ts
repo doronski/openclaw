@@ -44,12 +44,20 @@ function resolveLimits(config: ExecResourceLimitsConfig): Limits {
 }
 
 // Control diagnostics must not echo manager environment values or command argv.
-function control(args: string[], timeout = CONTROL_TIMEOUT_MS): Promise<{ ok: boolean; stdout: string }> {
+function control(
+  args: string[],
+  timeout = CONTROL_TIMEOUT_MS,
+): Promise<{ ok: boolean; stdout: string }> {
   return new Promise((resolve) => {
     execFile(
       SYSTEMCTL,
       ["--user", "--no-ask-password", ...args],
-      { encoding: "utf8", timeout, maxBuffer: 256 * 1024, env: process.env },
+      {
+        encoding: "utf8",
+        timeout: Math.min(timeout, 2_147_483_647),
+        maxBuffer: 256 * 1024,
+        env: process.env,
+      },
       (error, stdout) => resolve({ ok: !error, stdout }),
     );
   });
@@ -87,7 +95,7 @@ async function readCgroup(directory: string, file: string): Promise<string | und
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       return undefined;
     }
-    throw new Error("exec systemd-user backend cannot verify cgroup resources");
+    throw new Error("exec systemd-user backend cannot verify cgroup resources", { cause: error });
   }
 }
 
@@ -95,6 +103,18 @@ async function requireWorkloadSlice(slice: string): Promise<string> {
   const properties = await show(slice);
   if (properties.ActiveState !== "active" || !properties.ControlGroup) {
     throw new Error("exec resourceLimits requires an active, preconfigured workload slice");
+  }
+  const selfMembership = await fs.readFile("/proc/self/cgroup", "utf8");
+  const selfCgroup = selfMembership.split("\n").find((line) => line.startsWith("0::"))?.slice(3);
+  if (!selfCgroup) {
+    throw new Error("exec resourceLimits requires a verifiable cgroup v2 owner");
+  }
+  if (
+    properties.ControlGroup === "/" ||
+    selfCgroup === properties.ControlGroup ||
+    selfCgroup.startsWith(`${properties.ControlGroup}/`)
+  ) {
+    throw new Error("exec workload slice must not contain the gateway command owner");
   }
   const directory = cgroupDirectory(properties.ControlGroup);
   const [memory, tasks] = await Promise.all([
@@ -118,7 +138,9 @@ function finiteNumber(value: string | undefined): number | undefined {
 /** Own only the command service: the gateway and model runner stay outside its cgroup. */
 export async function createSystemdUserAdapter(input: Input): Promise<SpawnProcessAdapter> {
   if (process.platform !== "linux" || !input.resourceLimits || !input.cwd) {
-    throw new Error("exec systemd-user resourceLimits requires Linux and an explicit working directory");
+    throw new Error(
+      "exec systemd-user resourceLimits requires Linux and an explicit working directory",
+    );
   }
   if (input.windowsVerbatimArguments || input.argv.length === 0) {
     throw new Error("exec systemd-user resourceLimits does not support this invocation");
@@ -193,9 +215,23 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
     stdinMode: input.stdinMode,
   });
   const childExit = child.wait();
-  let launcherExited = false;
-  void childExit.then(() => { launcherExited = true; }, () => { launcherExited = true; });
+  type LauncherState =
+    | { status: "running" }
+    | { status: "exited"; exit: Awaited<ReturnType<typeof child.wait>> }
+    | { status: "error" };
+  let launcherState: LauncherState = { status: "running" };
+  const getLauncherState = (): LauncherState => launcherState;
+  void childExit.then(
+    (exit) => {
+      launcherState = { status: "exited", exit };
+    },
+    () => {
+      launcherState = { status: "error" };
+    },
+  );
   let lastProperties: Properties = {};
+  let observedChildPid: number | undefined;
+  let observedMemoryPeak: number | undefined;
   let finished = false;
   let stopPromise: Promise<void> | undefined;
   let controlFailure = false;
@@ -204,7 +240,11 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
       const stopped = await control(["stop", unit], limits.killGraceSec * 1000 + CONTROL_TIMEOUT_MS);
       if (!stopped.ok) {
         const properties = await show(unit);
-        if (properties.LoadState !== "not-found" && properties.ActiveState !== "inactive" && properties.ActiveState !== "failed") {
+        if (
+          properties.LoadState !== "not-found" &&
+          properties.ActiveState !== "inactive" &&
+          properties.ActiveState !== "failed"
+        ) {
           throw new Error("exec systemd-user service could not be stopped");
         }
       }
@@ -214,6 +254,14 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
       if (events !== undefined && !/^populated 0$/m.test(events)) {
         throw new Error("exec systemd-user cgroup is still populated after stop");
       }
+      const launcher = getLauncherState();
+      const waitedForSuccessfulService =
+        launcher.status === "exited" && launcher.exit.code === 0 && launcher.exit.signal === null;
+      // A missing path alone proves nothing before activation. Bind absence to
+      // the exact observed unit, successful StopUnit, or systemd-run --wait success.
+      if (!stopped.ok && lastProperties.LoadState !== "loaded" && !waitedForSuccessfulService) {
+        throw new Error("exec systemd-user cannot verify cleanup of an unobserved service");
+      }
     })();
     return stopPromise;
   };
@@ -222,40 +270,20 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
       const properties = await show(unit);
       if (properties.LoadState !== "not-found") {
         lastProperties = properties;
+        const pid = finiteNumber(properties.ExecMainPID);
+        if (pid !== undefined && pid > 0) {
+          observedChildPid = pid;
+        }
+        const peak = finiteNumber(properties.MemoryPeak);
+        if (peak !== undefined && (observedMemoryPeak === undefined || peak > observedMemoryPeak)) {
+          observedMemoryPeak = peak;
+        }
       }
     } catch {
       controlFailure = true;
-      await stop();
     }
   };
-  // Fast successful units can unload before a status read; emit explicit missing
-  // PID/peak values rather than substituting the systemd-run client's identity.
-  // Do not hand an uncancellable starting unit to the supervisor. Once the
-  // service is published, cancellation always addresses that exact unit.
-  const startupDeadline = startedAtMs + Math.min(timeoutMs, CONTROL_TIMEOUT_MS);
-  while (!launcherExited) {
-    await observe();
-    if (lastProperties.LoadState === "loaded") {
-      break;
-    }
-    if (Date.now() >= startupDeadline) {
-      child.kill("SIGKILL");
-      await childExit.catch(() => undefined);
-      await stop();
-      child.dispose();
-      throw new Error("exec systemd-user service did not start before its deadline");
-    }
-    await delay(25);
-  }
-  let observing = false;
-  const pollTimer = setInterval(() => {
-    if (!finished && !observing) {
-      observing = true;
-      void observe().catch(() => { controlFailure = true; }).finally(() => { observing = false; });
-    }
-  }, 250);
-  pollTimer.unref?.();
-  const trace = (phase: "started" | "completed", exitCode: number | null) => {
+  const trace = (phase: "started" | "completed", exitCode: number | null, cleanupVerified?: boolean) => {
     emitDiagnosticEvent({
       type: "exec.process.containment",
       phase,
@@ -264,15 +292,64 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
       toolCallId: input.toolCallId,
       unit,
       cgroup,
-      childPid: finiteNumber(lastProperties.ExecMainPID),
+      childPid: observedChildPid,
       startedAtMs,
-      ...(phase === "completed" ? { endedAtMs: Date.now() } : {}),
-      memoryPeakBytes: finiteNumber(lastProperties.MemoryPeak),
+      ...(phase === "completed" ? { endedAtMs: Date.now(), cleanupVerified } : {}),
+      memoryPeakBytes: observedMemoryPeak,
       result: lastProperties.Result,
       exitCode,
     });
   };
   trace("started", null);
+  const refuseStartup = async (message: string): Promise<never> => {
+    child.kill("SIGKILL");
+    await childExit.catch(() => undefined);
+    let cleanupVerified = false;
+    try {
+      await stop();
+      cleanupVerified = true;
+    } finally {
+      trace("completed", null, cleanupVerified);
+      child.dispose();
+    }
+    throw new Error(message);
+  };
+  // Fast successful units can unload before inspection. Keep unknown PID/peak
+  // absent; successful systemd-run --wait still proves the service terminated.
+  const startupDeadline = startedAtMs + Math.min(timeoutMs, CONTROL_TIMEOUT_MS);
+  while (true) {
+    await observe();
+    if (controlFailure) {
+      return await refuseStartup("exec systemd-user service monitoring failed before activation");
+    }
+    const launcher = getLauncherState();
+    if (launcher.status !== "running" || lastProperties.LoadState === "loaded") {
+      break;
+    }
+    if (Date.now() >= startupDeadline) {
+      return await refuseStartup("exec systemd-user service did not start before its deadline");
+    }
+    await delay(25);
+  }
+  let observing = false;
+  const pollTimer = setInterval(() => {
+    if (!finished && !observing) {
+      observing = true;
+      void observe()
+        .then(async () => {
+          if (controlFailure) {
+            await stop();
+          }
+        })
+        .catch(() => {
+          controlFailure = true;
+        })
+        .finally(() => {
+          observing = false;
+        });
+    }
+  }, 250);
+  pollTimer.unref?.();
   const wait = async () => {
     let exit: Awaited<ReturnType<typeof child.wait>>;
     try {
@@ -281,9 +358,16 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
     } finally {
       finished = true;
       clearInterval(pollTimer);
-      await stop();
+      let cleanupVerified = false;
+      try {
+        await stop();
+        cleanupVerified = true;
+      } finally {
+        const launcher = getLauncherState();
+        const code = launcher.status === "exited" ? launcher.exit.code : null;
+        trace("completed", code, cleanupVerified);
+      }
     }
-    trace("completed", exit.code);
     const reset = await control(["reset-failed", unit]);
     if (!reset.ok && (await show(unit)).LoadState !== "not-found") {
       throw new Error("exec systemd-user service failed to release its terminal unit");
@@ -306,7 +390,9 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
       if (signal === "SIGKILL") {
         void control(["kill", "--kill-whom=all", "--signal=SIGKILL", unit]);
       }
-      void stop().catch(() => { controlFailure = true; });
+      void stop().catch(() => {
+        controlFailure = true;
+      });
     },
     dispose: () => {
       finished = true;
