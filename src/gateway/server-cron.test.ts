@@ -19,6 +19,7 @@ const {
   loadConfigMock,
   fetchWithSsrFGuardMock,
   sendCronAnnouncePayloadStrictMock,
+  sendFailureNotificationAnnounceMock,
   runCronIsolatedAgentTurnMock,
   cleanupBrowserSessionsForLifecycleEndMock,
   getGlobalHookRunnerMock,
@@ -37,6 +38,7 @@ const {
   loadConfigMock: vi.fn(),
   fetchWithSsrFGuardMock: vi.fn(),
   sendCronAnnouncePayloadStrictMock: vi.fn(async () => {}),
+  sendFailureNotificationAnnounceMock: vi.fn(async () => {}),
   runCronIsolatedAgentTurnMock: vi.fn<RunCronIsolatedAgentTurnMock>(async () => ({
     status: "ok",
     summary: "ok",
@@ -167,6 +169,7 @@ vi.mock("../cron/delivery.js", async () => {
   return {
     ...actual,
     sendCronAnnouncePayloadStrict: sendCronAnnouncePayloadStrictMock,
+    sendFailureNotificationAnnounce: sendFailureNotificationAnnounceMock,
   };
 });
 
@@ -293,6 +296,7 @@ describe("buildGatewayCronService", () => {
     loadConfigMock.mockClear();
     fetchWithSsrFGuardMock.mockClear();
     sendCronAnnouncePayloadStrictMock.mockClear();
+    sendFailureNotificationAnnounceMock.mockClear();
     runCronIsolatedAgentTurnMock.mockClear();
     cleanupBrowserSessionsForLifecycleEndMock.mockClear();
     runCronChangedMock.mockClear();
@@ -572,7 +576,11 @@ describe("buildGatewayCronService", () => {
     }
   });
 
-  it("suppresses command cron NO_REPLY output before announce delivery", async () => {
+  it.each([
+    { label: "NO_REPLY", stdout: "NO_REPLY\n", exitCode: 0 },
+    { label: "empty", stdout: "", exitCode: 0 },
+    { label: "nonzero NO_REPLY", stdout: "NO_REPLY\n", exitCode: 7 },
+  ])("classifies $label command output before announce delivery", async ({ stdout, exitCode }) => {
     const cfg = createCronConfig("server-cron-command-no-reply");
     loadConfigMock.mockReturnValue(cfg);
 
@@ -591,7 +599,11 @@ describe("buildGatewayCronService", () => {
         wakeMode: "next-heartbeat",
         payload: {
           kind: "command",
-          argv: [process.execPath, "-e", "process.stdout.write('NO_REPLY\\n')"],
+          argv: [
+            process.execPath,
+            "-e",
+            `process.stdout.write(${JSON.stringify(stdout)}); process.exitCode = ${exitCode}`,
+          ],
         },
         delivery: {
           mode: "announce",
@@ -602,8 +614,23 @@ describe("buildGatewayCronService", () => {
 
       await state.cron.run(job.id, "force");
 
-      expect(state.cron.getJob(job.id)?.state.lastRunStatus).toBe("ok");
-      expect(state.cron.getJob(job.id)?.state.lastDeliveryError).toBeUndefined();
+      const updated = state.cron.getJob(job.id);
+      expect(sendCronAnnouncePayloadStrictMock).not.toHaveBeenCalled();
+      expect(fetchWithSsrFGuardMock).not.toHaveBeenCalled();
+      if (exitCode === 0) {
+        expect(updated?.state.lastRunStatus).toBe("ok");
+        expect(updated?.state.lastDeliveryStatus).toBe("not-requested");
+        expect(updated?.state.lastDelivered).toBeUndefined();
+        expect(updated?.state.lastDeliveryError).toBeUndefined();
+        expect(updated?.state.lastFailureNotificationDeliveryStatus).toBe("not-requested");
+        expect(sendFailureNotificationAnnounceMock).not.toHaveBeenCalled();
+      } else {
+        expect(updated?.state.lastRunStatus).toBe("error");
+        expect(updated?.state.lastError).toBe("command exited with code 7");
+        expect(updated?.state.lastDeliveryStatus).toBe("not-delivered");
+        expect(updated?.state.lastFailureNotificationDeliveryStatus).toBe("unknown");
+        expect(sendFailureNotificationAnnounceMock).toHaveBeenCalledTimes(1);
+      }
     } finally {
       state.cron.stop();
     }

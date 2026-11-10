@@ -620,6 +620,7 @@ function resolveDeliveryState(params: {
   job: CronJob;
   runStatus: CronRunStatus;
   delivered?: boolean;
+  deliveryAttempted?: boolean;
   error?: string;
   globalFailureDestination?: CronConfig["failureDestination"];
 }): {
@@ -628,7 +629,14 @@ function resolveDeliveryState(params: {
   error?: string;
   failureNotification: CronFailureNotificationDelivery;
 } {
-  const primaryDeliveryRequested = resolveCronDeliveryPlan(params.job).requested;
+  // A successful command can intentionally produce no outbound message even
+  // when its job normally announces results. That is not a delivery failure.
+  const commandOutputSuppressed =
+    params.job.payload.kind === "command" &&
+    params.runStatus === "ok" &&
+    params.deliveryAttempted === false;
+  const primaryDeliveryRequested =
+    resolveCronDeliveryPlan(params.job).requested && !commandOutputSuppressed;
   // Failure destinations can receive alerts even when the primary delivery
   // path was disabled or failed before direct delivery produced an ack.
   const alternateFailureNotificationRequested =
@@ -644,6 +652,18 @@ function resolveDeliveryState(params: {
     };
   }
   if (params.runStatus === "error") {
+    if (params.job.payload.kind === "command") {
+      // Command output delivery does not acknowledge the separate asynchronous
+      // failure notification dispatched by the Gateway completion handler.
+      return {
+        delivered: false,
+        status: "not-delivered",
+        error: params.error,
+        failureNotification: {
+          status: params.job.delivery?.bestEffort === true ? "not-requested" : "unknown",
+        },
+      };
+    }
     const failureNotification: CronFailureNotificationDelivery =
       alternateFailureNotificationRequested ? { status: "unknown" } : { status: "delivered" };
     if (params.delivered === true) {
@@ -703,6 +723,7 @@ export function applyJobResult(
     error?: string;
     diagnostics?: CronRunOutcome["diagnostics"];
     delivered?: boolean;
+    deliveryAttempted?: boolean;
     provider?: string;
     startedAt: number;
     endedAt: number;
@@ -749,6 +770,7 @@ export function applyJobResult(
     job,
     runStatus: result.status,
     delivered: result.delivered,
+    deliveryAttempted: result.deliveryAttempted,
     error: result.error,
     globalFailureDestination: state.deps.cronConfig?.failureDestination,
   });
@@ -1113,6 +1135,7 @@ function applyOutcomeToStoredJob(state: CronServiceState, result: TimedCronRunOu
         error: result.error,
         diagnostics: result.diagnostics,
         delivered: result.delivered,
+        deliveryAttempted: result.deliveryAttempted,
         provider: result.provider,
         startedAt: result.startedAt,
         endedAt: result.endedAt,
@@ -1148,6 +1171,7 @@ function applyOutcomeToStoredJob(state: CronServiceState, result: TimedCronRunOu
     error: result.error,
     diagnostics: result.diagnostics,
     delivered: result.delivered,
+    deliveryAttempted: result.deliveryAttempted,
     provider: result.provider,
     startedAt: result.startedAt,
     endedAt: result.endedAt,
@@ -1908,6 +1932,7 @@ async function runStartupCatchupCandidate(
       summary: result.summary,
       diagnostics: result.diagnostics,
       delivered: result.delivered,
+      deliveryAttempted: result.deliveryAttempted,
       sessionId: result.sessionId,
       sessionKey: result.sessionKey,
       model: result.model,

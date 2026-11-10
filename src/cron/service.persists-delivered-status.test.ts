@@ -91,6 +91,7 @@ function createIsolatedCronWithFinishedBarrier(params: {
   storePath: string;
   status?: "ok" | "error";
   delivered?: boolean;
+  deliveryAttempted?: boolean;
   error?: string;
   onFinished?: (evt: {
     jobId: string;
@@ -104,18 +105,23 @@ function createIsolatedCronWithFinishedBarrier(params: {
   }) => void;
 }) {
   const finished = createFinishedBarrier();
+  const runJob = vi.fn(async () => ({
+    status: params.status ?? ("ok" as const),
+    summary: "done",
+    ...(params.error === undefined ? {} : { error: params.error }),
+    ...(params.delivered === undefined ? {} : { delivered: params.delivered }),
+    ...(params.deliveryAttempted === undefined
+      ? {}
+      : { deliveryAttempted: params.deliveryAttempted }),
+  }));
   const cron = new CronService({
     storePath: params.storePath,
     cronEnabled: true,
     log: noopLogger,
     enqueueSystemEvent: vi.fn(),
     requestHeartbeat: vi.fn(),
-    runIsolatedAgentJob: vi.fn(async () => ({
-      status: params.status ?? ("ok" as const),
-      summary: "done",
-      ...(params.error === undefined ? {} : { error: params.error }),
-      ...(params.delivered === undefined ? {} : { delivered: params.delivered }),
-    })),
+    runIsolatedAgentJob: runJob,
+    runCommandJob: runJob,
     onEvent: (evt) => {
       if (evt.action === "finished") {
         params.onFinished?.({
@@ -189,6 +195,7 @@ async function runIsolatedJobAndReadState(params: {
   job: CronAddInput;
   status?: "ok" | "error";
   delivered?: boolean;
+  deliveryAttempted?: boolean;
   error?: string;
   onFinished?: (evt: {
     jobId: string;
@@ -207,6 +214,9 @@ async function runIsolatedJobAndReadState(params: {
     storePath: store.storePath,
     ...(params.status !== undefined ? { status: params.status } : {}),
     ...(params.delivered !== undefined ? { delivered: params.delivered } : {}),
+    ...(params.deliveryAttempted !== undefined
+      ? { deliveryAttempted: params.deliveryAttempted }
+      : {}),
     ...(params.error !== undefined ? { error: params.error } : {}),
     onFinished: (evt) => {
       params.onFinished?.(evt);
@@ -249,6 +259,7 @@ describe("CronService persists delivered status", () => {
     const updated = await runIsolatedJobAndReadState({
       job: buildAnnounceIsolatedAgentTurnJob("delivered-false"),
       delivered: false,
+      deliveryAttempted: false,
     });
     expectSuccessfulCronRun(updated);
     expect(updated?.state.lastDelivered).toBe(false);
@@ -257,6 +268,73 @@ describe("CronService persists delivered status", () => {
     expect(updated?.state.lastFailureNotificationDelivered).toBeUndefined();
     expect(updated?.state.lastFailureNotificationDeliveryStatus).toBe("not-requested");
   });
+
+  it("does not record a delivery failure for a successful quiet command", async () => {
+    let capturedEvent: { delivered?: boolean; deliveryStatus?: string } | undefined;
+    const updated = await runIsolatedJobAndReadState({
+      job: {
+        ...buildAnnounceIsolatedAgentTurnJob("quiet-command"),
+        payload: { kind: "command", argv: ["synthetic-command"] },
+      },
+      delivered: false,
+      deliveryAttempted: false,
+      onFinished: (evt) => {
+        capturedEvent = evt;
+      },
+    });
+
+    expectDeliveryNotRequested(updated);
+    expect(capturedEvent?.delivered).toBeUndefined();
+    expect(capturedEvent?.deliveryStatus).toBe("not-requested");
+  });
+
+  it("preserves an attempted command delivery failure in a successful best-effort run", async () => {
+    const updated = await runIsolatedJobAndReadState({
+      job: {
+        ...buildAnnounceIsolatedAgentTurnJob("command-delivery-failure"),
+        payload: { kind: "command", argv: ["synthetic-command"] },
+        delivery: { mode: "announce", channel: "forum", to: "123", bestEffort: true },
+      },
+      delivered: false,
+      deliveryAttempted: true,
+      error: "Message failed",
+    });
+
+    expectSuccessfulCronRun(updated);
+    expect(updated?.state.lastDeliveryStatus).toBe("not-delivered");
+    expect(updated?.state.lastDelivered).toBe(false);
+    expect(updated?.state.lastDeliveryError).toBe("Message failed");
+  });
+
+  it.each([
+    { delivered: false, deliveryAttempted: false, bestEffort: false },
+    { delivered: true, deliveryAttempted: true, bestEffort: false },
+    { delivered: false, deliveryAttempted: true, bestEffort: true },
+  ])(
+    "keeps command errors separate from failure-notification acknowledgements ($delivered/$deliveryAttempted/$bestEffort)",
+    async ({ delivered, deliveryAttempted, bestEffort }) => {
+      const updated = await runIsolatedJobAndReadState({
+        job: {
+          ...buildAnnounceIsolatedAgentTurnJob("command-error"),
+          payload: { kind: "command", argv: ["synthetic-command"] },
+          delivery: { mode: "announce", channel: "forum", to: "123", bestEffort },
+        },
+        status: "error",
+        delivered,
+        deliveryAttempted,
+        error: "command exited with code 7",
+      });
+
+      expect(updated?.state.lastRunStatus).toBe("error");
+      expect(updated?.state.lastDeliveryStatus).toBe("not-delivered");
+      expect(updated?.state.lastDelivered).toBe(false);
+      expect(updated?.state.lastError).toBe("command exited with code 7");
+      expect(updated?.state.lastFailureNotificationDeliveryStatus).toBe(
+        bestEffort ? "not-requested" : "unknown",
+      );
+      expect(updated?.state.lastFailureNotificationDelivered).toBeUndefined();
+    },
+  );
 
   it("keeps failure notification delivery separate from successful result delivery", async () => {
     let capturedEvent:
