@@ -6,7 +6,7 @@ import { getShellConfig } from "../../agents/shell-utils.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { createChildAdapter } from "./adapters/child.js";
 import { createPtyAdapter } from "./adapters/pty.js";
-import { createSystemdUserAdapter } from "./adapters/systemd-user.js";
+import { createSystemdUserAdapter, resolveSystemdUserLimits } from "./adapters/systemd-user.js";
 import { createRunRegistry } from "./registry.js";
 import type {
   ManagedRun,
@@ -124,6 +124,7 @@ export function createProcessSupervisor(): ProcessSupervisor {
       cancelScope(scopeKey, "manual-cancel");
     }
     const startedAtMs = Date.now();
+    const containedStartedAtMs = input.resourceLimits ? performance.now() : null;
     const record: RunRecord = {
       runId,
       sessionId: input.sessionId,
@@ -152,6 +153,21 @@ export function createProcessSupervisor(): ProcessSupervisor {
     let overallTimeoutDeadlineMs: number | null = null;
     let noOutputTimeoutDeadlineMs: number | null = null;
 
+    const clearTimers = () => {
+      if (timeoutTimer) {
+        clearTimeout(timeoutTimer);
+        timeoutTimer = null;
+      }
+      if (noOutputTimer) {
+        clearTimeout(noOutputTimer);
+        noOutputTimer = null;
+      }
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+        forceKillTimer = null;
+      }
+    };
+
     const setForcedReason = (reason: TerminationReason) => {
       if (forcedReason) {
         return;
@@ -163,8 +179,15 @@ export function createProcessSupervisor(): ProcessSupervisor {
     let cancelAdapter: ((reason: TerminationReason) => void) | null = null;
 
     const requestCancel = (reason: TerminationReason) => {
-      setForcedReason(reason);
-      cancelAdapter?.(reason);
+      const elapsedReason = input.resourceLimits
+        ? resolveElapsedTimeoutReason({
+            nowMs: performance.now(),
+            overallTimeoutDeadlineMs,
+            noOutputTimeoutDeadlineMs,
+          })
+        : null;
+      setForcedReason(elapsedReason ?? reason);
+      cancelAdapter?.(forcedReason ?? reason);
     };
 
     const touchOutput = () => {
@@ -187,6 +210,18 @@ export function createProcessSupervisor(): ProcessSupervisor {
       }
       if (input.resourceLimits && input.mode !== "child") {
         throw new Error("systemd-user resource containment does not support PTY execution");
+      }
+      const resourceLimits = input.resourceLimits
+        ? resolveSystemdUserLimits(input.resourceLimits)
+        : undefined;
+      if (resourceLimits && containedStartedAtMs !== null) {
+        // The contained command budget includes adapter startup and cleanup.
+        // A late adapter must receive an already-expired cancellation on arrival.
+        const timeoutMs = Math.min(overallTimeoutMs ?? Infinity, resourceLimits.timeoutSec * 1000);
+        overallTimeoutDeadlineMs = containedStartedAtMs + timeoutMs;
+        timeoutTimer = setTimeout(() => {
+          requestCancel("overall-timeout");
+        }, Math.max(0, overallTimeoutDeadlineMs - performance.now()));
       }
       const adapter =
         input.mode === "pty"
@@ -214,25 +249,10 @@ export function createProcessSupervisor(): ProcessSupervisor {
                 stdinMode: input.stdinMode,
               });
 
-      registry.updateState(runId, "running", { pid: adapter.pid });
+      registry.updateState(runId, forcedReason ? "exiting" : "running", { pid: adapter.pid });
 
-      const clearTimers = () => {
-        if (timeoutTimer) {
-          clearTimeout(timeoutTimer);
-          timeoutTimer = null;
-        }
-        if (noOutputTimer) {
-          clearTimeout(noOutputTimer);
-          noOutputTimer = null;
-        }
-        if (forceKillTimer) {
-          clearTimeout(forceKillTimer);
-          forceKillTimer = null;
-        }
-      };
-
-      const gracefulCancelTimeoutMs = input.resourceLimits?.killGraceSec
-        ? input.resourceLimits.killGraceSec * 1000
+      const gracefulCancelTimeoutMs = resourceLimits
+        ? resourceLimits.killGraceSec * 1000
         : GRACEFUL_CANCEL_TIMEOUT_MS;
       cancelAdapter = (_reason: TerminationReason) => {
         if (settled || forceKillTimer) {
@@ -247,7 +267,14 @@ export function createProcessSupervisor(): ProcessSupervisor {
         forceKillTimer.unref?.();
       };
 
-      if (overallTimeoutMs) {
+      if (resourceLimits) {
+        if (
+          forcedReason ||
+          (overallTimeoutDeadlineMs !== null && performance.now() >= overallTimeoutDeadlineMs)
+        ) {
+          requestCancel("overall-timeout");
+        }
+      } else if (overallTimeoutMs) {
         overallTimeoutDeadlineMs = performance.now() + overallTimeoutMs;
         timeoutTimer = setTimeout(() => {
           requestCancel("overall-timeout");
@@ -350,6 +377,7 @@ export function createProcessSupervisor(): ProcessSupervisor {
       });
       return managedRun;
     } catch (err) {
+      clearTimers();
       registry.finalize(runId, {
         reason: "spawn-error",
         exitCode: null,

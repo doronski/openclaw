@@ -276,7 +276,18 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
     );
     serviceResult = "timeout";
     finish({ code: 143, signal: null });
-    await expect(adapter.wait()).resolves.toMatchObject({ reason: "overall-timeout" });
+    await expect(adapter.wait()).resolves.toEqual({ code: 143, signal: null });
+    adapter.dispose();
+  });
+
+  it("retains a stop timeout in diagnostics without inferring an elapsed command budget", async () => {
+    const adapter = await createSystemdUserAdapter(input());
+    serviceResult = "timeout";
+    finish({ code: 1, signal: null });
+    await expect(adapter.wait()).resolves.toEqual({ code: 1, signal: null });
+    expect(mocks.emitDiagnosticEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ result: "timeout", exitCode: 1, cleanupVerified: true }),
+    );
     adapter.dispose();
   });
 
