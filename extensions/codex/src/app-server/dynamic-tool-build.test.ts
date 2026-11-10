@@ -1255,7 +1255,9 @@ describe("Codex app-server dynamic tool build", () => {
       const params = createParams(path.join(tempDir, "session.jsonl"), workspaceDir);
       params.disableTools = false;
       params.runtimePlan = createCodexRuntimePlanFixture();
-      const exec = { resourceLimits: { backend: "systemd-user" as const, slice: "commands.slice" } };
+      const exec = {
+        resourceLimits: { backend: "systemd-user" as const, slice: "commands.slice" },
+      };
       params.config =
         scope === "global"
           ? { tools: { exec } }

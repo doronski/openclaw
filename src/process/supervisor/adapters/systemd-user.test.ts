@@ -326,7 +326,9 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
       expect(mocks.emitDiagnosticEvent).toHaveBeenLastCalledWith(
         expect.objectContaining({ phase: "completed", cleanupVerified: false }),
       );
-      expect(mocks.execFile.mock.calls.every((call) => call[2].killSignal === "SIGKILL")).toBe(true);
+      expect(mocks.execFile.mock.calls.every((call) => call[2].killSignal === "SIGKILL")).toBe(
+        true,
+      );
       adapter.dispose();
     },
   );
