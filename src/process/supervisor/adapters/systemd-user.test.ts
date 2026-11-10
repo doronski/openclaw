@@ -34,6 +34,7 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
     mode: "child",
     runId: "run-1",
     sessionId: "session-1",
+    backendId: "exec-host",
     toolCallId: "tool-1",
     argv: ["/bin/sh", "-c", "printf '%s' '$TOKEN'"],
     cwd: "/workspace",

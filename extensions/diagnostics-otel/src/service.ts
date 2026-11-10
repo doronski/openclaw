@@ -2030,6 +2030,14 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         unit: "ms",
         description: "Exec process duration",
       });
+      const execContainmentCounter = meter.createCounter("openclaw.exec.containment", {
+        unit: "1",
+        description: "Exec containment lifecycle events",
+      });
+      const execContainmentMemoryPeakHistogram = meter.createHistogram(
+        "openclaw.exec.containment.memory_peak_bytes",
+        { unit: "By", description: "Peak memory reported by contained exec processes" },
+      );
       const memoryRssHistogram = meter.createHistogram("openclaw.memory.rss_bytes", {
         unit: "By",
         description: "Resident set size reported by diagnostic memory samples",
@@ -3779,6 +3787,47 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
         }
       };
 
+      const recordExecProcessContainment = (
+        evt: Extract<DiagnosticEventPayload, { type: "exec.process.containment" }>,
+      ) => {
+        // Unit/cgroup paths and execution identities must not become metric labels or span content.
+        const attrs: Record<string, string | boolean> = {
+          "openclaw.exec.containment.phase": evt.phase,
+        };
+        if (evt.cleanupVerified !== undefined) {
+          attrs["openclaw.exec.containment.cleanup_verified"] = evt.cleanupVerified;
+        }
+        if (evt.cgroup !== undefined) {
+          attrs["openclaw.exec.containment.cgroup_matches"] = evt.cgroup === evt.expectedCgroup;
+        }
+        execContainmentCounter.add(1, attrs);
+        if (evt.phase === "completed" && evt.memoryPeakBytes !== undefined) {
+          execContainmentMemoryPeakHistogram.record(evt.memoryPeakBytes, attrs);
+        }
+        if (!tracesEnabled) {
+          return;
+        }
+        const spanAttrs: Record<string, string | number | boolean> = { ...attrs };
+        if (evt.exitCode !== null) {
+          spanAttrs["openclaw.exec.exit_code"] = evt.exitCode;
+        }
+        if (evt.memoryPeakBytes !== undefined) {
+          spanAttrs["openclaw.exec.containment.memory_peak_bytes"] = evt.memoryPeakBytes;
+        }
+        if (evt.result) {
+          spanAttrs["openclaw.exec.containment.result"] = lowCardinalityAttr(evt.result, "other");
+        }
+        const durationMs =
+          evt.endedAtMs !== undefined ? Math.max(0, evt.endedAtMs - evt.startedAtMs) : 0;
+        const span = spanWithDuration("openclaw.exec.containment", spanAttrs, durationMs, {
+          endTimeMs: evt.endedAtMs ?? evt.startedAtMs,
+        });
+        if (evt.cleanupVerified === false) {
+          span.setStatus({ code: SpanStatusCode.ERROR, message: "cleanup_unverified" });
+        }
+        span.end(evt.endedAtMs ?? evt.startedAtMs);
+      };
+
       const recordExecProcessCompleted = (
         evt: Extract<DiagnosticEventPayload, { type: "exec.process.completed" }>,
       ) => {
@@ -4063,6 +4112,9 @@ export function createDiagnosticsOtelService(): OpenClawPluginService {
               return;
             case "skill.used":
               recordSkillUsed(evt, metadata);
+              return;
+            case "exec.process.containment":
+              recordExecProcessContainment(evt);
               return;
             case "exec.process.completed":
               recordExecProcessCompleted(evt);

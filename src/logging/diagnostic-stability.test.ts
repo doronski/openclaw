@@ -144,6 +144,72 @@ describe("diagnostic stability recorder", () => {
     expect(snapshot.events[1]).not.toHaveProperty("reason");
   });
 
+  it("preserves containment evidence without execution identities or cgroup paths", async () => {
+    startDiagnosticStabilityRecorder();
+    const event = {
+      type: "exec.process.containment" as const,
+      runId: "private-run",
+      sessionId: "private-session",
+      toolCallId: "private-call",
+      unit: "private-unit.service",
+      expectedCgroup: "/private/cgroup",
+      startedAtMs: 100,
+      exitCode: null,
+    };
+    emitDiagnosticEvent({ ...event, phase: "started" });
+    emitDiagnosticEvent({
+      ...event,
+      phase: "completed",
+      cgroup: event.expectedCgroup,
+      childPid: 1234,
+      endedAtMs: 130,
+      cleanupVerified: true,
+      memoryPeakBytes: 4096,
+      result: "success",
+      exitCode: 0,
+    });
+    emitDiagnosticEvent({
+      ...event,
+      phase: "completed",
+      cgroup: "/private/unexpected",
+      endedAtMs: 140,
+      cleanupVerified: false,
+      result: "private free-form error",
+    });
+    await waitForDiagnosticEventsDrained();
+
+    const snapshot = getDiagnosticStabilitySnapshot();
+    expect(snapshot.events).toHaveLength(3);
+    expect(snapshot.events[0]).not.toHaveProperty("cgroupMatches");
+    expect(snapshot.events[0]?.cleanupVerified).toBeUndefined();
+    expect(snapshot.events[0]?.memoryPeakBytes).toBeUndefined();
+    expectFields(snapshot.events[1], {
+      phase: "completed",
+      cgroupMatches: true,
+      cleanupVerified: true,
+      memoryPeakBytes: 4096,
+      durationMs: 30,
+      reason: "success",
+      exitCode: 0,
+    });
+    expectFields(snapshot.events[2], { cgroupMatches: false, cleanupVerified: false });
+    expect(snapshot.events[2]).not.toHaveProperty("reason");
+    for (const record of snapshot.events) {
+      for (const key of [
+        "runId",
+        "sessionId",
+        "toolCallId",
+        "unit",
+        "expectedCgroup",
+        "cgroup",
+        "childPid",
+      ]) {
+        expect(record).not.toHaveProperty(key);
+      }
+    }
+    expect(JSON.stringify(snapshot)).not.toContain("private");
+  });
+
   it("records exec approval followup suppression metadata", async () => {
     startDiagnosticStabilityRecorder();
 
