@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - .github/workflows/exec-resource-limits.yml
+      - scripts/plugin-sdk-surface-report.mjs
+      - test/scripts/plugin-sdk-surface-report.test.ts
       - extensions/codex/src/app-server/**
       - src/agents/agent-tools.ts
       - src/agents/agent-tools-agent-config.exec.test.ts
@@ -26,6 +28,8 @@ on:
   push:
     paths:
       - .github/workflows/exec-resource-limits.yml
+      - scripts/plugin-sdk-surface-report.mjs
+      - test/scripts/plugin-sdk-surface-report.test.ts
       - extensions/codex/src/app-server/**
       - src/agents/agent-tools.ts
       - src/agents/agent-tools-agent-config.exec.test.ts
@@ -120,6 +124,9 @@ jobs:
           extensions/codex/src/app-server/thread-lifecycle.test.ts
           extensions/codex/media-understanding-provider.test.ts
           extensions/codex/src/web-search-provider.test.ts
+          test/scripts/plugin-sdk-surface-report.test.ts
+      - name: Plugin SDK surface budgets
+        run: pnpm plugin-sdk:surface:check
       - name: Core type checks
         if: ${{ !cancelled() }}
         run: pnpm tsgo:core
