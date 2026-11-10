@@ -13,6 +13,11 @@ on:
       - src/config/schema.labels.ts
       - src/config/types.tools.ts
       - src/config/zod-schema.agent-runtime.ts
+      - src/cron/service/ops.ts
+      - src/cron/service/timer.ts
+      - src/cron/service/timer.test.ts
+      - src/cron/service.persists-delivered-status.test.ts
+      - src/gateway/server-cron.test.ts
       - src/infra/diagnostic-events.ts
       - src/logging/diagnostic-stability*
       - extensions/diagnostics-otel/src/service*
@@ -30,6 +35,11 @@ on:
       - src/config/schema.labels.ts
       - src/config/types.tools.ts
       - src/config/zod-schema.agent-runtime.ts
+      - src/cron/service/ops.ts
+      - src/cron/service/timer.ts
+      - src/cron/service/timer.test.ts
+      - src/cron/service.persists-delivered-status.test.ts
+      - src/gateway/server-cron.test.ts
       - src/infra/diagnostic-events.ts
       - src/logging/diagnostic-stability*
       - extensions/diagnostics-otel/src/service*
@@ -97,6 +107,12 @@ jobs:
           src/agents/bash-tools.exec.security-floor.test.ts
           src/agents/agent-tools-agent-config.exec.test.ts
           src/config/config.exec-resource-limits.test.ts
+          src/cron/service.persists-delivered-status.test.ts
+          src/cron/service.failure-alert.test.ts
+          src/cron/service/timer.test.ts
+          src/cron/service/timer.regression.test.ts
+          src/gateway/server-cron.test.ts
+          src/gateway/server-cron-notifications.test.ts
           src/logging/diagnostic-stability.test.ts
           extensions/diagnostics-otel/src/service.test.ts
           extensions/codex/src/app-server/dynamic-tool-build.test.ts

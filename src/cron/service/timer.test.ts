@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setupCronServiceSuite, writeCronStoreSnapshot } from "../../cron/service.test-harness.js";
 import { createCronServiceState } from "../../cron/service/state.js";
-import { executeJobCore, onTimer } from "../../cron/service/timer.js";
+import { executeJobCore, onTimer, runMissedJobs } from "../../cron/service/timer.js";
 import { loadCronStore } from "../../cron/store.js";
 import type { CronJob } from "../../cron/types.js";
 import * as detachedTaskRuntime from "../../tasks/detached-task-runtime.js";
@@ -229,6 +229,51 @@ describe("cron service timer seam coverage", () => {
     });
     expect(runIsolatedAgentJob).not.toHaveBeenCalled();
   });
+
+  it.each(["timer", "startup"])(
+    "keeps quiet command delivery not requested through the %s path",
+    async (route) => {
+      const { storePath } = await makeStorePath();
+      const now = Date.parse("2026-03-23T12:00:00.000Z");
+      const job = {
+        ...createDueCommandJob({ now }),
+        delivery: { mode: "announce" as const, channel: "forum", to: "123" },
+      };
+      await writeCronStoreSnapshot({ storePath, jobs: [job] });
+      const runCommandJob = vi.fn(async () => ({
+        status: "ok" as const,
+        delivered: false,
+        deliveryAttempted: false,
+      }));
+      const onEvent = vi.fn();
+      const state = createCronServiceState({
+        storePath,
+        cronEnabled: true,
+        log: logger,
+        nowMs: () => now,
+        enqueueSystemEvent: vi.fn(),
+        requestHeartbeat: vi.fn(),
+        runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
+        runCommandJob,
+        onEvent,
+      });
+
+      if (route === "startup") {
+        await runMissedJobs(state);
+      } else {
+        await onTimer(state);
+      }
+
+      expect(runCommandJob).toHaveBeenCalledTimes(1);
+      const stored = await loadCronStore(storePath);
+      expect(stored.jobs[0]?.state.lastRunStatus).toBe("ok");
+      expect(stored.jobs[0]?.state.lastDeliveryStatus).toBe("not-requested");
+      expect(stored.jobs[0]?.state.lastDelivered).toBeUndefined();
+      expect(onEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "finished", deliveryStatus: "not-requested" }),
+      );
+    },
+  );
 
   it("records isolated cron task runs against the backing cron session", async () => {
     const { storePath } = await makeStorePath();
