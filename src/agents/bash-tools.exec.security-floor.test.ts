@@ -93,22 +93,23 @@ describe("exec security floor", () => {
     }
   });
 
-  it.each([{ host: "node" as const, elevated: false }, { pty: true, elevated: false }, { elevated: true }])(
-    "refuses an incompatible resource-limited pathway %j",
-    async (args) => {
-      const tool = createExecTool({
-        host: "auto",
-        security: "full",
-        ask: "off",
-        resourceLimits: { backend: "systemd-user", slice: "commands.slice" },
-        elevated: { enabled: true, allowed: true, defaultLevel: "on" },
-      });
-      await expect(tool.execute("call-1", { command: "true", ...args })).rejects.toThrow(
-        "requires non-elevated gateway execution without PTY",
-      );
-      expect(callGatewayTool).not.toHaveBeenCalled();
-    },
-  );
+  it.each([
+    { host: "node" as const, elevated: false },
+    { pty: true, elevated: false },
+    { elevated: true },
+  ])("refuses an incompatible resource-limited pathway %j", async (args) => {
+    const tool = createExecTool({
+      host: "auto",
+      security: "full",
+      ask: "off",
+      resourceLimits: { backend: "systemd-user", slice: "commands.slice" },
+      elevated: { enabled: true, allowed: true, defaultLevel: "on" },
+    });
+    await expect(tool.execute("call-1", { command: "true", ...args })).rejects.toThrow(
+      "requires non-elevated gateway execution without PTY",
+    );
+    expect(callGatewayTool).not.toHaveBeenCalled();
+  });
 
   it("ignores model-supplied allowlist security when configured security is full", async () => {
     const tool = createExecTool({
