@@ -145,6 +145,16 @@ jobs:
     needs: focused
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      source-commit: ${{ steps.source.outputs.commit }}
+      core-artifact-id: ${{ steps.upload-core.outputs.artifact-id }}
+      core-artifact-digest: ${{ steps.upload-core.outputs.artifact-digest }}
+      core-package-name: ${{ steps.core-package.outputs.name }}
+      core-package-sha256: ${{ steps.core-package.outputs.sha256 }}
+      codex-artifact-id: ${{ steps.upload-codex.outputs.artifact-id }}
+      codex-artifact-digest: ${{ steps.upload-codex.outputs.artifact-digest }}
+      codex-package-name: ${{ steps.codex-package.outputs.name }}
+      codex-package-sha256: ${{ steps.codex-package.outputs.sha256 }}
     env:
       NODE_OPTIONS: --max-old-space-size=16384
     steps:
@@ -153,17 +163,27 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
+      - name: Record the actual package producer checkout
+        id: source
+        run: printf 'commit=%s\n' "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-node-env
         with:
           node-version: 24.x
           install-bun: "true"
           use-actions-cache: "false"
       - name: Build and validate core package through the maintained package workflow
-        run: >-
-          node scripts/package-openclaw-for-docker.mjs
-          --output-dir .artifacts/exec-resource-limits/core
-          --pack-json .artifacts/exec-resource-limits/core-pack.json
+        id: core-package
+        run: |
+          set -euo pipefail
+          node scripts/package-openclaw-for-docker.mjs \
+            --output-dir .artifacts/exec-resource-limits/core \
+            --pack-json .artifacts/exec-resource-limits/core-pack.json
+          packages=(.artifacts/exec-resource-limits/core/*.tgz)
+          test "${#packages[@]}" -eq 1
+          printf 'name=%s\nsha256=%s\n' "$(basename "${packages[0]}")" \
+            "$(sha256sum "${packages[0]}" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - name: Upload exact-source core candidate
+        id: upload-core
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: exec-resource-limits-core-${{ github.event.pull_request.head.sha || github.sha }}
@@ -174,10 +194,18 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Build and pack the separate Codex plugin without publishing
+        id: codex-package
         env:
           OPENCLAW_PLUGIN_NPM_PACK_OUTPUT_DIR: .artifacts/exec-resource-limits/codex
-        run: bash scripts/plugin-npm-publish.sh --pack extensions/codex
+        run: |
+          set -euo pipefail
+          bash scripts/plugin-npm-publish.sh --pack extensions/codex
+          packages=(.artifacts/exec-resource-limits/codex/*.tgz)
+          test "${#packages[@]}" -eq 1
+          printf 'name=%s\nsha256=%s\n' "$(basename "${packages[0]}")" \
+            "$(sha256sum "${packages[0]}" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       - name: Upload exact-source Codex candidate
+        id: upload-codex
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: exec-resource-limits-codex-${{ github.event.pull_request.head.sha || github.sha }}
@@ -186,6 +214,7 @@ jobs:
           retention-days: 7
 
   arm64-package-smoke:
+    needs: package
     if: github.repository == 'doronski/openclaw'
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 12
@@ -195,44 +224,59 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          ref: 49d2d494bef7932c3aa52bc2f224c9b408f03727
+          ref: ${{ needs.package.outputs.source-commit }}
           fetch-depth: 1
           persist-credentials: false
           sparse-checkout: scripts
-      - name: Download and verify the original accepted package artifacts
+      - name: Download and verify this run's producer-bound package artifacts
+        id: artifacts
         env:
           GH_TOKEN: ${{ github.token }}
+          PRODUCER_COMMIT: ${{ needs.package.outputs.source-commit }}
+          WORKFLOW_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          CORE_ARTIFACT_ID: ${{ needs.package.outputs.core-artifact-id }}
+          CORE_ARTIFACT_DIGEST: ${{ needs.package.outputs.core-artifact-digest }}
+          CORE_PACKAGE_NAME: ${{ needs.package.outputs.core-package-name }}
+          CORE_PACKAGE_SHA256: ${{ needs.package.outputs.core-package-sha256 }}
+          CODEX_ARTIFACT_ID: ${{ needs.package.outputs.codex-artifact-id }}
+          CODEX_ARTIFACT_DIGEST: ${{ needs.package.outputs.codex-artifact-digest }}
+          CODEX_PACKAGE_NAME: ${{ needs.package.outputs.codex-package-name }}
+          CODEX_PACKAGE_SHA256: ${{ needs.package.outputs.codex-package-sha256 }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = 49d2d494bef7932c3aa52bc2f224c9b408f03727
+          test "$(git rev-parse HEAD)" = "$PRODUCER_COMMIT"
+          git diff --exit-code -- scripts
           artifact_root="$RUNNER_TEMP/openclaw-arm64-packages"
           mkdir -m 700 "$artifact_root"
           while read -r kind artifact_id zip_sha; do
-            gh api "repos/doronski/openclaw/actions/artifacts/$artifact_id" > "$artifact_root/$kind.json"
-            jq -e --argjson id "$artifact_id" --arg digest "sha256:$zip_sha" '
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id" > "$artifact_root/$kind.json"
+            jq -e --argjson id "$artifact_id" --arg digest "sha256:$zip_sha" \
+              --argjson run "$GITHUB_RUN_ID" --arg head "$WORKFLOW_HEAD" '
               .id == $id and .expired == false and .digest == $digest and
-              .workflow_run.id == 42727586123 and
-              .workflow_run.head_sha == "49d2d494bef7932c3aa52bc2f224c9b408f03727"
+              .workflow_run.id == $run and .workflow_run.head_sha == $head
             ' "$artifact_root/$kind.json"
-            gh api "repos/doronski/openclaw/actions/artifacts/$artifact_id/zip" > "$artifact_root/$kind.zip"
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$artifact_root/$kind.zip"
             printf '%s  %s\n' "$zip_sha" "$artifact_root/$kind.zip" | sha256sum --check
             unzip -q "$artifact_root/$kind.zip" -d "$artifact_root/$kind"
-          done <<'ARTIFACTS'
-          core 13723233149 89163fc7aee4708a2151d99c5f037db777913ae0893dd4327ad5c4bf8d18dc61
-          codex 13722814376 5f3c02d8efcb8d677fa94137e2b19d505338e9c59272a192ead451b3b636aaac
-          ARTIFACTS
-          core_tgz="$artifact_root/core/.artifacts/exec-resource-limits/core/openclaw-2026.7.1.tgz"
-          codex_tgz="$artifact_root/codex/openclaw-codex-2026.7.1.tgz"
+          done < <(printf '%s %s %s\n' \
+            core "$CORE_ARTIFACT_ID" "$CORE_ARTIFACT_DIGEST" \
+            codex "$CODEX_ARTIFACT_ID" "$CODEX_ARTIFACT_DIGEST")
+          core_tgz="$artifact_root/core/.artifacts/exec-resource-limits/core/$CORE_PACKAGE_NAME"
+          codex_tgz="$artifact_root/codex/$CODEX_PACKAGE_NAME"
           printf '%s  %s\n' \
-            0bf2a3e893dc730666645ac99491ff221290d9a333b40c037de35727a1546cb6 "$core_tgz" \
-            6c6563c8303c98f785df64b75d381e42f9af2b0b051f33b6a88a6e4bf293d50c "$codex_tgz" \
+            "$CORE_PACKAGE_SHA256" "$core_tgz" "$CODEX_PACKAGE_SHA256" "$codex_tgz" \
             | sha256sum --check
-          jq -e '.commit == "49d2d494bef7932c3aa52bc2f224c9b408f03727" and .version == "2026.7.1"' \
+          jq -e --arg commit "$PRODUCER_COMMIT" '.commit == $commit' \
             "$artifact_root/core/dist/build-info.json"
+          printf 'core-tgz=%s\ncodex-tgz=%s\n' "$core_tgz" "$codex_tgz" >> "$GITHUB_OUTPUT"
       - name: Qualify core and separate Codex package without a model turn
+        env:
+          CORE_TGZ: ${{ steps.artifacts.outputs.core-tgz }}
+          CODEX_TGZ: ${{ steps.artifacts.outputs.codex-tgz }}
+          CORE_PACKAGE_SHA256: ${{ needs.package.outputs.core-package-sha256 }}
+          CODEX_PACKAGE_SHA256: ${{ needs.package.outputs.codex-package-sha256 }}
         run: |
           set -euo pipefail
-          artifact_root="$RUNNER_TEMP/openclaw-arm64-packages"
           evidence="$RUNNER_TEMP/openclaw-arm64-evidence"
           container="openclaw-arm64-package-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           mkdir -m 700 "$evidence"
@@ -259,25 +303,28 @@ jobs:
             --pids-limit 256 --stop-timeout 5 --cap-drop ALL --security-opt no-new-privileges \
             --user "$(id -u):$(id -g)" \
             --mount "type=bind,src=$GITHUB_WORKSPACE/scripts,dst=/harness/scripts,readonly" \
-            --mount "type=bind,src=$artifact_root/core/.artifacts/exec-resource-limits/core/openclaw-2026.7.1.tgz,dst=/tmp/openclaw-current.tgz,readonly" \
-            --mount "type=bind,src=$artifact_root/codex/openclaw-codex-2026.7.1.tgz,dst=/tmp/openclaw-codex.tgz,readonly" \
+            --mount "type=bind,src=$CORE_TGZ,dst=/tmp/openclaw-current.tgz,readonly" \
+            --mount "type=bind,src=$CODEX_TGZ,dst=/tmp/openclaw-codex.tgz,readonly" \
             --mount "type=bind,src=$evidence,dst=/evidence" \
             --env HOME=/tmp/openclaw-home --env OPENCLAW_HOME=/tmp/openclaw-home \
             --env OPENCLAW_STATE_DIR=/tmp/openclaw-home/.openclaw \
             --env OPENCLAW_CONFIG_PATH=/tmp/openclaw-home/.openclaw/openclaw.json \
             --env OPENCLAW_CURRENT_PACKAGE_TGZ=/tmp/openclaw-current.tgz \
+            --env "CORE_PACKAGE_SHA256=$CORE_PACKAGE_SHA256" --env "CODEX_PACKAGE_SHA256=$CODEX_PACKAGE_SHA256" \
             --env OPENCLAW_E2E_NPM_INSTALL_TIMEOUT=180s --env NPM_CONFIG_USERCONFIG=/dev/null \
             --env OPENCLAW_DISABLE_BONJOUR=1 --env CI=true \
             --workdir /harness -i "$image_id" timeout --kill-after=5s 180s bash -s \
             > "$evidence/container.stdout" 2> "$evidence/container.stderr" <<'SMOKE'
           set -euo pipefail
+          printf '%s  %s\n' "$CORE_PACKAGE_SHA256" /tmp/openclaw-current.tgz \
+            "$CODEX_PACKAGE_SHA256" /tmp/openclaw-codex.tgz | sha256sum --check
           test "$(uname -m)" = aarch64
           test "$(node --version)" = v22.22.3
           uname -m
           node --version
           mkdir -p "$HOME" "$OPENCLAW_STATE_DIR"
           source scripts/lib/openclaw-e2e-instance.sh
-          openclaw_e2e_install_package /evidence/core-install.log "original accepted core package" /tmp/openclaw-proof
+          openclaw_e2e_install_package /evidence/core-install.log "same-run core package" /tmp/openclaw-proof
           export PATH="/tmp/openclaw-proof/bin:$PATH"
           package_root=/tmp/openclaw-proof/lib/node_modules/openclaw
           openclaw --version > /evidence/openclaw-version.txt
