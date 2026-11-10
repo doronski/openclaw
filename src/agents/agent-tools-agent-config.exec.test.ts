@@ -69,6 +69,34 @@ describe("Agent-specific exec tool defaults", () => {
     tempDirs.cleanup();
   });
 
+  it.each(["session", "explicit"])(
+    "applies agent-only resource limits from %s identity in the actual lazy exec factory",
+    async (identity) => {
+      const tools = createOpenClawCodingTools({
+        config: {
+          tools: { exec: { host: "gateway", security: "full", ask: "off" } },
+          agents: {
+            list: [
+              { id: "main" },
+              {
+                id: "worker",
+                tools: {
+                  exec: { resourceLimits: { backend: "systemd-user", slice: "commands.slice" } },
+                },
+              },
+            ],
+          },
+        },
+        agentId: identity === "explicit" ? "worker" : undefined,
+        sessionKey: identity === "session" ? "agent:worker:main" : "opaque-session",
+        ...createTempAgentDirs("agent-only-resource-limits"),
+      });
+      await expect(
+        requireExecTool(tools).execute("contained-call", { command: "true", pty: true }),
+      ).rejects.toThrow("requires non-elevated gateway execution without PTY");
+    },
+  );
+
   it("should run exec synchronously when process is denied", async () => {
     const cfg: OpenClawConfig = {
       tools: {

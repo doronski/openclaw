@@ -6,6 +6,7 @@ import { getShellConfig } from "../../agents/shell-utils.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { createChildAdapter } from "./adapters/child.js";
 import { createPtyAdapter } from "./adapters/pty.js";
+import { createSystemdUserAdapter } from "./adapters/systemd-user.js";
 import { createRunRegistry } from "./registry.js";
 import type {
   ManagedRun,
@@ -184,6 +185,9 @@ export function createProcessSupervisor(): ProcessSupervisor {
       if (input.mode === "child" && input.argv.length === 0) {
         throw new Error("spawn argv cannot be empty");
       }
+      if (input.resourceLimits && input.mode !== "child") {
+        throw new Error("systemd-user resource containment does not support PTY execution");
+      }
       const adapter =
         input.mode === "pty"
           ? await (async () => {
@@ -199,14 +203,16 @@ export function createProcessSupervisor(): ProcessSupervisor {
                 env: input.env,
               });
             })()
-          : await createChildAdapter({
-              argv: input.argv,
-              cwd: input.cwd,
-              env: input.env,
-              windowsVerbatimArguments: input.windowsVerbatimArguments,
-              input: input.input,
-              stdinMode: input.stdinMode,
-            });
+          : input.resourceLimits
+            ? await createSystemdUserAdapter({ ...input, runId })
+            : await createChildAdapter({
+                argv: input.argv,
+                cwd: input.cwd,
+                env: input.env,
+                windowsVerbatimArguments: input.windowsVerbatimArguments,
+                input: input.input,
+                stdinMode: input.stdinMode,
+              });
 
       registry.updateState(runId, "running", { pid: adapter.pid });
 
@@ -225,6 +231,9 @@ export function createProcessSupervisor(): ProcessSupervisor {
         }
       };
 
+      const gracefulCancelTimeoutMs = input.resourceLimits?.killGraceSec
+        ? input.resourceLimits.killGraceSec * 1000
+        : GRACEFUL_CANCEL_TIMEOUT_MS;
       cancelAdapter = (_reason: TerminationReason) => {
         if (settled || forceKillTimer) {
           return;
@@ -234,7 +243,7 @@ export function createProcessSupervisor(): ProcessSupervisor {
           if (!settled) {
             adapter.kill("SIGKILL");
           }
-        }, GRACEFUL_CANCEL_TIMEOUT_MS);
+        }, gracefulCancelTimeoutMs);
         forceKillTimer.unref?.();
       };
 
@@ -273,7 +282,7 @@ export function createProcessSupervisor(): ProcessSupervisor {
           overallTimeoutDeadlineMs,
           noOutputTimeoutDeadlineMs,
         });
-        const terminalReason = forcedReason ?? deadlineReason;
+        const terminalReason = forcedReason ?? result.reason ?? deadlineReason;
         if (settled) {
           return {
             reason: terminalReason ?? "exit",

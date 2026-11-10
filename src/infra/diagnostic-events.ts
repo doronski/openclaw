@@ -498,6 +498,24 @@ export type DiagnosticSkillUsedEvent = DiagnosticBaseEvent & {
   toolCallId?: string;
 };
 
+export type DiagnosticExecProcessContainmentEvent = DiagnosticBaseEvent & {
+  type: "exec.process.containment";
+  phase: "started" | "completed";
+  runId: string;
+  sessionId: string;
+  toolCallId?: string;
+  unit: string;
+  expectedCgroup: string;
+  cgroup?: string;
+  childPid?: number;
+  startedAtMs: number;
+  endedAtMs?: number;
+  cleanupVerified?: boolean;
+  memoryPeakBytes?: number;
+  result?: string;
+  exitCode: number | null;
+};
+
 export type DiagnosticExecProcessCompletedEvent = DiagnosticBaseEvent & {
   type: "exec.process.completed";
   sessionKey?: string;
@@ -780,6 +798,7 @@ export type DiagnosticEventPayload =
   | DiagnosticToolExecutionErrorEvent
   | DiagnosticToolExecutionBlockedEvent
   | DiagnosticSkillUsedEvent
+  | DiagnosticExecProcessContainmentEvent
   | DiagnosticExecProcessCompletedEvent
   | DiagnosticExecApprovalFollowupSuppressedEvent
   | DiagnosticRunStartedEvent
@@ -905,6 +924,7 @@ const ASYNC_DIAGNOSTIC_EVENT_TYPES = new Set<DiagnosticEventPayload["type"]>([
   "tool.execution.blocked",
   "skill.used",
   "exec.process.completed",
+  "exec.process.containment",
   "exec.approval.followup_suppressed",
   "message.delivery.started",
   "message.delivery.completed",

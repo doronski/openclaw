@@ -164,6 +164,31 @@ describe("resolveCodexNativeExecutionPolicy", () => {
     });
   });
 
+  it.each(["session", "explicit"])(
+    "blocks native execution for agent-only resource limits from %s identity",
+    (identity) => {
+      expect(
+        resolveCodexNativeExecutionPolicy({
+          config: {
+            agents: {
+              list: [
+                { id: "main" },
+                {
+                  id: "worker",
+                  tools: {
+                    exec: { resourceLimits: { backend: "systemd-user", slice: "commands.slice" } },
+                  },
+                },
+              ],
+            },
+          },
+          agentId: identity === "explicit" ? "worker" : undefined,
+          sessionKey: identity === "session" ? "agent:worker:main" : "opaque-session",
+        }),
+      ).toMatchObject({ nativeToolSurfaceAllowed: false, resourceLimitsRequired: true });
+    },
+  );
+
   it("honors agent exec config before global exec config", () => {
     expect(
       resolveCodexNativeExecutionPolicy({

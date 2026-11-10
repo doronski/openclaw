@@ -218,5 +218,6 @@ function resolveCodexNativeNodeExecBlock(params: {
   return formatCodexNativeNodeExecBlock({
     surface: params.surface,
     reason: policy.blockReason,
+    resourceLimitsRequired: policy.resourceLimitsRequired,
   });
 }

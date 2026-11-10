@@ -311,7 +311,23 @@ export function parseToolsBySenderTypedKey(
  */
 export type GroupToolPolicyBySenderConfig = Record<string, GroupToolPolicyConfig>;
 
+/** Opt-in Linux user-service limits; use an agent override for deliberately larger jobs. */
+export type ExecResourceLimitsConfig = {
+  backend: "systemd-user";
+  /** Existing workload slice with a finite aggregate memory and task budget. */
+  slice: string;
+  memoryHighBytes?: number;
+  memoryMaxBytes?: number;
+  memorySwapMaxBytes?: number;
+  tasksMax?: number;
+  /** Hard maximum, including backgrounded commands; per-call timeout cannot raise it. */
+  timeoutSec?: number;
+  killGraceSec?: number;
+};
+
 export type ExecToolConfig = {
+  /** Require per-command Linux systemd user resource containment. No uncontained fallback. */
+  resourceLimits?: ExecResourceLimitsConfig;
   /** Exec host routing (default: auto). */
   host?: "auto" | "sandbox" | "gateway" | "node";
   /** Normalized exec policy mode. Prefer this over raw security/ask knobs. */

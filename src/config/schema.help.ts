@@ -449,6 +449,20 @@ export const FIELD_HELP: Record<string, string> = {
     "Web-tool policy grouping for search/fetch providers, limits, and fallback behavior tuning. Keep enabled settings aligned with API key availability and outbound networking policy.",
   "tools.exec":
     "Exec-tool policy grouping for shell execution host, security mode, approval behavior, and runtime bindings. Keep conservative defaults in production and tighten elevated execution paths.",
+  "tools.exec.resourceLimits":
+    "Opt-in Linux systemd user-service containment for every exec command. Requires a preconfigured aggregate workload slice; unavailable or incompatible execution fails closed. Use an agent-specific override for deliberately larger jobs.",
+  "tools.exec.resourceLimits.backend": "Resource backend; currently systemd-user only.",
+  "tools.exec.resourceLimits.slice":
+    "Existing user workload slice with finite memory.max and pids.max budgets.",
+  "tools.exec.resourceLimits.memoryHighBytes":
+    "Command memory pressure threshold in bytes (default 1 GiB).",
+  "tools.exec.resourceLimits.memoryMaxBytes": "Command hard memory limit in bytes (default 2 GiB).",
+  "tools.exec.resourceLimits.memorySwapMaxBytes": "Command swap limit in bytes (default 0).",
+  "tools.exec.resourceLimits.tasksMax": "Command process/thread limit (default 128).",
+  "tools.exec.resourceLimits.timeoutSec":
+    "Hard command deadline, including background execution (default 60 seconds). Per-call timeouts cannot raise it.",
+  "tools.exec.resourceLimits.killGraceSec":
+    "Grace before killing all remaining command cgroup members (default 5 seconds).",
   "tools.exec.host":
     'Selects execution target strategy for shell commands. Use "auto" for runtime-aware behavior (sandbox when available, otherwise gateway), or pin sandbox/gateway/node explicitly when you need a fixed surface.',
   "tools.exec.mode":
