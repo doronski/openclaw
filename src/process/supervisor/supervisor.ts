@@ -214,14 +214,19 @@ export function createProcessSupervisor(): ProcessSupervisor {
       const resourceLimits = input.resourceLimits
         ? resolveSystemdUserLimits(input.resourceLimits)
         : undefined;
-      if (resourceLimits && containedStartedAtMs !== null) {
+      const effectiveTimeoutMs = resourceLimits
+        ? Math.min(overallTimeoutMs ?? Infinity, resourceLimits.timeoutSec * 1000)
+        : overallTimeoutMs;
+      if (resourceLimits && containedStartedAtMs !== null && effectiveTimeoutMs !== undefined) {
         // The contained command budget includes adapter startup and cleanup.
         // A late adapter must receive an already-expired cancellation on arrival.
-        const timeoutMs = Math.min(overallTimeoutMs ?? Infinity, resourceLimits.timeoutSec * 1000);
-        overallTimeoutDeadlineMs = containedStartedAtMs + timeoutMs;
-        timeoutTimer = setTimeout(() => {
-          requestCancel("overall-timeout");
-        }, Math.max(0, overallTimeoutDeadlineMs - performance.now()));
+        overallTimeoutDeadlineMs = containedStartedAtMs + effectiveTimeoutMs;
+        timeoutTimer = setTimeout(
+          () => {
+            requestCancel("overall-timeout");
+          },
+          Math.max(0, overallTimeoutDeadlineMs - performance.now()),
+        );
       }
       const adapter =
         input.mode === "pty"
@@ -239,7 +244,7 @@ export function createProcessSupervisor(): ProcessSupervisor {
               });
             })()
           : input.resourceLimits
-            ? await createSystemdUserAdapter({ ...input, runId })
+            ? await createSystemdUserAdapter({ ...input, runId, timeoutMs: effectiveTimeoutMs })
             : await createChildAdapter({
                 argv: input.argv,
                 cwd: input.cwd,

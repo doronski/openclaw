@@ -167,29 +167,42 @@ describe("process supervisor", () => {
 
   it.each([
     { timeoutMs: 9_000, timeoutSec: 2, expectedMs: 2_000 },
+    { timeoutMs: 0, timeoutSec: 2, expectedMs: 2_000 },
     { timeoutMs: 1_000, timeoutSec: 2, expectedMs: 1_000 },
     { timeoutMs: undefined, timeoutSec: undefined, expectedMs: 60_000 },
     { timeoutMs: 90_000, timeoutSec: undefined, expectedMs: 60_000 },
-  ])("enforces the resolved contained budget (%j)", async ({ timeoutMs, timeoutSec, expectedMs }) => {
-    vi.useFakeTimers();
-    const nowSpy = vi.spyOn(performance, "now").mockReturnValue(1_000);
-    const adapter = createStubChildAdapter({
-      onKill: (signal, current) => current.settle(null, signal),
-    });
-    createSystemdUserAdapterMock.mockResolvedValue(adapter);
-    const run = await spawnChild(createProcessSupervisor(), {
-      argv: createSilentIdleArgv(), sessionId: "contained-budget", timeoutMs,
-      resourceLimits: {
-        backend: "systemd-user", slice: "commands.slice",
-        ...(timeoutSec === undefined ? {} : { timeoutSec }),
-      },
-    });
-    await vi.advanceTimersByTimeAsync(expectedMs - 1);
-    expect(adapter.killMock).not.toHaveBeenCalled();
-    nowSpy.mockReturnValue(1_000 + expectedMs);
-    await vi.advanceTimersByTimeAsync(1);
-    await expect(run.wait()).resolves.toMatchObject({ reason: "overall-timeout", timedOut: true });
-  });
+  ])(
+    "enforces the resolved contained budget (%j)",
+    async ({ timeoutMs, timeoutSec, expectedMs }) => {
+      vi.useFakeTimers();
+      const nowSpy = vi.spyOn(performance, "now").mockReturnValue(1_000);
+      const adapter = createStubChildAdapter({
+        onKill: (signal, current) => current.settle(null, signal),
+      });
+      createSystemdUserAdapterMock.mockResolvedValue(adapter);
+      const run = await spawnChild(createProcessSupervisor(), {
+        argv: createSilentIdleArgv(),
+        sessionId: "contained-budget",
+        timeoutMs,
+        resourceLimits: {
+          backend: "systemd-user",
+          slice: "commands.slice",
+          ...(timeoutSec === undefined ? {} : { timeoutSec }),
+        },
+      });
+      expect(createSystemdUserAdapterMock).toHaveBeenCalledWith(
+        expect.objectContaining({ timeoutMs: expectedMs }),
+      );
+      await vi.advanceTimersByTimeAsync(expectedMs - 1);
+      expect(adapter.killMock).not.toHaveBeenCalled();
+      nowSpy.mockReturnValue(1_000 + expectedMs);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(run.wait()).resolves.toMatchObject({
+        reason: "overall-timeout",
+        timedOut: true,
+      });
+    },
+  );
 
   it("retains a contained nonzero stop failure completed within its overall budget", async () => {
     vi.useFakeTimers();
@@ -197,13 +210,17 @@ describe("process supervisor", () => {
     const adapter = createStubChildAdapter();
     createSystemdUserAdapterMock.mockResolvedValue(adapter);
     const run = await spawnChild(createProcessSupervisor(), {
-      argv: createSilentIdleArgv(), sessionId: "contained-stop", timeoutMs: 9_000,
+      argv: createSilentIdleArgv(),
+      sessionId: "contained-stop",
+      timeoutMs: 9_000,
       resourceLimits: { backend: "systemd-user", slice: "commands.slice", timeoutSec: 8 },
     });
     nowSpy.mockReturnValue(2_500);
     adapter.settle(1);
     await expect(run.wait()).resolves.toMatchObject({
-      reason: "exit", exitCode: 1, timedOut: false,
+      reason: "exit",
+      exitCode: 1,
+      timedOut: false,
     });
     expect(adapter.killMock).not.toHaveBeenCalled();
   });
@@ -214,7 +231,9 @@ describe("process supervisor", () => {
     const adapter = createStubChildAdapter();
     createSystemdUserAdapterMock.mockResolvedValue(adapter);
     const run = await spawnChild(createProcessSupervisor(), {
-      argv: createSilentIdleArgv(), sessionId: "contained-elapsed", timeoutMs: 9_000,
+      argv: createSilentIdleArgv(),
+      sessionId: "contained-elapsed",
+      timeoutMs: 9_000,
       resourceLimits: { backend: "systemd-user", slice: "commands.slice", timeoutSec: 2 },
     });
     nowSpy.mockReturnValue(3_001);
@@ -223,24 +242,29 @@ describe("process supervisor", () => {
     expect(adapter.killMock).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])("preserves the first contained cancellation cause (elapsed=%s)", async (elapsed) => {
-    vi.useFakeTimers();
-    const nowSpy = vi.spyOn(performance, "now").mockReturnValue(1_000);
-    const adapter = createStubChildAdapter({
-      onKill: (signal, current) => current.settle(null, signal),
-    });
-    createSystemdUserAdapterMock.mockResolvedValue(adapter);
-    const run = await spawnChild(createProcessSupervisor(), {
-      argv: createSilentIdleArgv(), sessionId: "contained-cancel",
-      resourceLimits: { backend: "systemd-user", slice: "commands.slice", timeoutSec: 2 },
-    });
-    nowSpy.mockReturnValue(elapsed ? 3_001 : 1_500);
-    run.cancel("manual-cancel");
-    nowSpy.mockReturnValue(3_500);
-    await expect(run.wait()).resolves.toMatchObject({
-      reason: elapsed ? "overall-timeout" : "manual-cancel", timedOut: elapsed,
-    });
-  });
+  it.each([false, true])(
+    "preserves the first contained cancellation cause (elapsed=%s)",
+    async (elapsed) => {
+      vi.useFakeTimers();
+      const nowSpy = vi.spyOn(performance, "now").mockReturnValue(1_000);
+      const adapter = createStubChildAdapter({
+        onKill: (signal, current) => current.settle(null, signal),
+      });
+      createSystemdUserAdapterMock.mockResolvedValue(adapter);
+      const run = await spawnChild(createProcessSupervisor(), {
+        argv: createSilentIdleArgv(),
+        sessionId: "contained-cancel",
+        resourceLimits: { backend: "systemd-user", slice: "commands.slice", timeoutSec: 2 },
+      });
+      nowSpy.mockReturnValue(elapsed ? 3_001 : 1_500);
+      run.cancel("manual-cancel");
+      nowSpy.mockReturnValue(3_500);
+      await expect(run.wait()).resolves.toMatchObject({
+        reason: elapsed ? "overall-timeout" : "manual-cancel",
+        timedOut: elapsed,
+      });
+    },
+  );
 
   it("counts adapter startup against the contained budget and cancels a late adapter", async () => {
     vi.useFakeTimers();
@@ -249,12 +273,16 @@ describe("process supervisor", () => {
       onKill: (signal, current) => current.settle(null, signal),
     });
     let deliverAdapter!: (adapter: ChildAdapter) => void;
-    createSystemdUserAdapterMock.mockReturnValue(new Promise<ChildAdapter>((resolve) => {
-      deliverAdapter = resolve;
-    }));
+    createSystemdUserAdapterMock.mockReturnValue(
+      new Promise<ChildAdapter>((resolve) => {
+        deliverAdapter = resolve;
+      }),
+    );
     const supervisor = createProcessSupervisor();
     const spawning = spawnChild(supervisor, {
-      argv: createSilentIdleArgv(), sessionId: "contained-startup", runId: "startup",
+      argv: createSilentIdleArgv(),
+      sessionId: "contained-startup",
+      runId: "startup",
       timeoutMs: 9_000,
       resourceLimits: { backend: "systemd-user", slice: "commands.slice", timeoutSec: 1 },
     });
@@ -273,10 +301,13 @@ describe("process supervisor", () => {
     vi.spyOn(performance, "now").mockReturnValue(1_000);
     createSystemdUserAdapterMock.mockRejectedValue(new Error("startup cleanup refused"));
     const timerCount = vi.getTimerCount();
-    await expect(spawnChild(createProcessSupervisor(), {
-      argv: createSilentIdleArgv(), sessionId: "contained-startup-error",
-      resourceLimits: { backend: "systemd-user", slice: "commands.slice", timeoutSec: 1 },
-    })).rejects.toThrow("startup cleanup refused");
+    await expect(
+      spawnChild(createProcessSupervisor(), {
+        argv: createSilentIdleArgv(),
+        sessionId: "contained-startup-error",
+        resourceLimits: { backend: "systemd-user", slice: "commands.slice", timeoutSec: 1 },
+      }),
+    ).rejects.toThrow("startup cleanup refused");
     expect(vi.getTimerCount()).toBe(timerCount);
     expect(createChildAdapterMock).not.toHaveBeenCalled();
   });
