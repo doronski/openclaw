@@ -25,7 +25,7 @@ type Limits = Required<ExecResourceLimitsConfig>;
 type Properties = Record<string, string>;
 type Input = Extract<SpawnInput, { mode: "child" }> & { runId: string };
 
-function resolveLimits(config: ExecResourceLimitsConfig): Limits {
+export function resolveSystemdUserLimits(config: ExecResourceLimitsConfig): Limits {
   const limits = { ...DEFAULT_LIMITS, ...config };
   if (
     limits.backend !== "systemd-user" ||
@@ -151,7 +151,7 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
   if (input.windowsVerbatimArguments || input.argv.length === 0) {
     throw new Error("exec systemd-user resourceLimits does not support this invocation");
   }
-  const limits = resolveLimits(input.resourceLimits);
+  const limits = resolveSystemdUserLimits(input.resourceLimits);
   const sliceCgroup = await requireWorkloadSlice(limits.slice);
   const unit = `openclaw-exec-${randomUUID()}.service`;
   const expectedCgroup = `${sliceCgroup}/${unit}`;
@@ -408,10 +408,9 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
     if (controlFailure) {
       throw new Error("exec systemd-user containment monitoring failed");
     }
-    return {
-      ...exit,
-      ...(lastProperties.Result === "timeout" ? { reason: "overall-timeout" as const } : {}),
-    };
+    // systemd also reports stop-grace expiry as "timeout". The supervisor owns
+    // the elapsed command budget; retain this result only in diagnostics.
+    return exit;
   };
   return {
     // The launcher is not the service's main PID. Never present it as the child.
