@@ -48,6 +48,9 @@ export type DiagnosticStabilityEventRecord = {
   commandLength?: number;
   exitCode?: number;
   timedOut?: boolean;
+  cleanupVerified?: boolean;
+  cgroupMatches?: boolean;
+  memoryPeakBytes?: number;
   final?: boolean;
   costUsd?: number;
   count?: number;
@@ -423,6 +426,19 @@ function sanitizeDiagnosticEvent(event: DiagnosticEventPayload): DiagnosticStabi
       record.source = event.skillSource;
       record.action = event.activation;
       record.target = event.skillName;
+      break;
+    case "exec.process.containment":
+      record.phase = event.phase;
+      record.exitCode = event.exitCode ?? undefined;
+      record.cleanupVerified = event.cleanupVerified;
+      record.memoryPeakBytes = event.memoryPeakBytes;
+      if (event.cgroup !== undefined) {
+        record.cgroupMatches = event.cgroup === event.expectedCgroup;
+      }
+      if (event.endedAtMs !== undefined) {
+        record.durationMs = Math.max(0, event.endedAtMs - event.startedAtMs);
+      }
+      assignReasonCode(record, event.result);
       break;
     case "exec.process.completed":
       record.target = event.target;

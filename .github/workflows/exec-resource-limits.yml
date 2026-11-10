@@ -14,6 +14,8 @@ on:
       - src/config/types.tools.ts
       - src/config/zod-schema.agent-runtime.ts
       - src/infra/diagnostic-events.ts
+      - src/logging/diagnostic-stability*
+      - extensions/diagnostics-otel/src/service*
       - src/process/supervisor/**
       - docs/tools/exec.md
   push:
@@ -29,6 +31,8 @@ on:
       - src/config/types.tools.ts
       - src/config/zod-schema.agent-runtime.ts
       - src/infra/diagnostic-events.ts
+      - src/logging/diagnostic-stability*
+      - extensions/diagnostics-otel/src/service*
       - src/process/supervisor/**
       - docs/tools/exec.md
 
@@ -93,6 +97,8 @@ jobs:
           src/agents/bash-tools.exec.security-floor.test.ts
           src/agents/agent-tools-agent-config.exec.test.ts
           src/config/config.exec-resource-limits.test.ts
+          src/logging/diagnostic-stability.test.ts
+          extensions/diagnostics-otel/src/service.test.ts
           extensions/codex/src/app-server/dynamic-tool-build.test.ts
           extensions/codex/src/app-server/native-execution-policy.test.ts
           extensions/codex/src/app-server/thread-lifecycle.test.ts
@@ -102,6 +108,12 @@ jobs:
       - name: Plugin type checks
         if: ${{ !cancelled() }}
         run: pnpm tsgo:extensions
+      - name: Core test type checks
+        if: ${{ !cancelled() }}
+        run: pnpm tsgo:core:test
+      - name: Plugin test type checks
+        if: ${{ !cancelled() }}
+        run: pnpm tsgo:extensions:test
       - name: Lint changed core and plugin files
         if: ${{ !cancelled() }}
         env:

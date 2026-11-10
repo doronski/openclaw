@@ -93,7 +93,7 @@ describe("exec security floor", () => {
     }
   });
 
-  it.each([{ host: "node", elevated: false }, { pty: true, elevated: false }, { elevated: true }])(
+  it.each([{ host: "node" as const, elevated: false }, { pty: true, elevated: false }, { elevated: true }])(
     "refuses an incompatible resource-limited pathway %j",
     async (args) => {
       const tool = createExecTool({

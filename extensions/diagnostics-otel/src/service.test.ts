@@ -4548,6 +4548,72 @@ describe("diagnostics-otel service", () => {
     await service.stop?.(ctx);
   });
 
+  test.each([false, true])("exports private-safe containment evidence with traces=%s", async (traces) => {
+    const service = createDiagnosticsOtelService();
+    const ctx = createOtelContext(OTEL_TEST_ENDPOINT, { traces, metrics: true });
+    await service.start(ctx);
+    const event = {
+      type: "exec.process.containment" as const,
+      runId: "private-run",
+      sessionId: "private-session",
+      toolCallId: "private-call",
+      unit: "private-unit.service",
+      expectedCgroup: "/private/cgroup",
+      startedAtMs: 100,
+      exitCode: null,
+    };
+    emitDiagnosticEvent({ ...event, phase: "started" });
+    emitDiagnosticEvent({
+      ...event,
+      phase: "completed",
+      cgroup: "/private/unexpected",
+      childPid: 1234,
+      endedAtMs: 130,
+      cleanupVerified: false,
+      memoryPeakBytes: 4096,
+      result: "private free-form error",
+      exitCode: 1,
+    });
+    await flushDiagnosticEvents();
+
+    const counter = telemetryState.counters.get("openclaw.exec.containment");
+    expect(counter?.add).toHaveBeenCalledTimes(2);
+    expect(counter?.add).toHaveBeenNthCalledWith(1, 1, {
+      "openclaw.exec.containment.phase": "started",
+    });
+    const completedAttrs = {
+      "openclaw.exec.containment.phase": "completed",
+      "openclaw.exec.containment.cleanup_verified": false,
+      "openclaw.exec.containment.cgroup_matches": false,
+    };
+    expect(counter?.add).toHaveBeenNthCalledWith(2, 1, completedAttrs);
+    expect(lastHistogramRecord("openclaw.exec.containment.memory_peak_bytes")).toEqual([
+      4096,
+      completedAttrs,
+    ]);
+    const calls = telemetryState.tracer.startSpan.mock.calls.filter(
+      (call) => call[0] === "openclaw.exec.containment",
+    );
+    expect(calls).toHaveLength(traces ? 2 : 0);
+    if (traces) {
+      expect(calls[1]?.[1]).toMatchObject({
+        startTime: 100,
+        attributes: {
+          ...completedAttrs,
+          "openclaw.exec.exit_code": 1,
+          "openclaw.exec.containment.memory_peak_bytes": 4096,
+          "openclaw.exec.containment.result": "other",
+        },
+      });
+      const spans = telemetryState.spans.filter((span) => span.name === "openclaw.exec.containment");
+      expect(spans[1]?.end).toHaveBeenCalledWith(130);
+      expect(spans[1]?.setStatus).toHaveBeenCalledWith({ code: 2, message: "cleanup_unverified" });
+    }
+    expect(JSON.stringify(counter?.add.mock.calls)).not.toContain("private");
+    expect(JSON.stringify(calls)).not.toContain("private");
+    await service.stop?.(ctx);
+  });
+
   test("exports exec process spans without command text", async () => {
     const service = createDiagnosticsOtelService();
     const ctx = createOtelContext(OTEL_TEST_ENDPOINT, { traces: true, metrics: true });
