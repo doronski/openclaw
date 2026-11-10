@@ -55,6 +55,7 @@ function control(
       {
         encoding: "utf8",
         timeout: Math.min(timeout, 2_147_483_647),
+        killSignal: "SIGKILL",
         maxBuffer: 256 * 1024,
         env: process.env,
       },
@@ -153,8 +154,8 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
   const limits = resolveLimits(input.resourceLimits);
   const sliceCgroup = await requireWorkloadSlice(limits.slice);
   const unit = `openclaw-exec-${randomUUID()}.service`;
-  const cgroup = `${sliceCgroup}/${unit}`;
-  const directory = cgroupDirectory(cgroup);
+  const expectedCgroup = `${sliceCgroup}/${unit}`;
+  const directory = cgroupDirectory(expectedCgroup);
   const timeoutMs = Math.min(input.timeoutMs ?? Infinity, limits.timeoutSec * 1000);
   const startedAtMs = Date.now();
   const env = input.env ?? process.env;
@@ -235,11 +236,20 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
     },
   );
   let lastProperties: Properties = {};
+  let observedCgroup: string | undefined;
   let observedChildPid: number | undefined;
   let observedMemoryPeak: number | undefined;
   let finished = false;
   let stopPromise: Promise<void> | undefined;
   let controlFailure = false;
+  const recordCgroup = (properties: Properties) => {
+    if (properties.ControlGroup) {
+      observedCgroup = properties.ControlGroup;
+    }
+    if (observedCgroup !== undefined && observedCgroup !== expectedCgroup) {
+      throw new Error("exec systemd-user service cgroup does not match its workload slice");
+    }
+  };
   const stop = (): Promise<void> => {
     stopPromise ??= (async () => {
       const stopped = await control(
@@ -248,6 +258,7 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
       );
       if (!stopped.ok) {
         const properties = await show(unit);
+        recordCgroup(properties);
         if (
           properties.LoadState !== "not-found" &&
           properties.ActiveState !== "inactive" &&
@@ -256,6 +267,7 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
           throw new Error("exec systemd-user service could not be stopped");
         }
       }
+      recordCgroup(lastProperties);
       // cgroup.events includes nested cgroups: checking only the main PID would
       // miss daemonized descendants which retained this command's budget.
       const events = await readCgroup(directory, "cgroup.events");
@@ -270,7 +282,14 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
       if (!stopped.ok && lastProperties.LoadState !== "loaded" && !waitedForSuccessfulService) {
         throw new Error("exec systemd-user cannot verify cleanup of an unobserved service");
       }
-    })();
+    })().finally(() => {
+      // Service control and cgroup checks own cleanup verification. Hard-kill a
+      // stuck launcher through the child adapter's bounded wait; its exit must
+      // not turn failed service cleanup into verified completion.
+      if (getLauncherState().status === "running") {
+        child.kill("SIGKILL");
+      }
+    });
     return stopPromise;
   };
   const observe = async () => {
@@ -278,6 +297,7 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
       const properties = await show(unit);
       if (properties.LoadState !== "not-found") {
         lastProperties = properties;
+        recordCgroup(properties);
         const pid = finiteNumber(properties.ExecMainPID);
         if (pid !== undefined && pid > 0) {
           observedChildPid = pid;
@@ -303,7 +323,8 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
       sessionId: input.sessionId,
       toolCallId: input.toolCallId,
       unit,
-      cgroup,
+      expectedCgroup,
+      cgroup: observedCgroup,
       childPid: observedChildPid,
       startedAtMs,
       ...(phase === "completed" ? { endedAtMs: Date.now(), cleanupVerified } : {}),

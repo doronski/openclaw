@@ -6,6 +6,7 @@ on:
       - .github/workflows/exec-resource-limits.yml
       - extensions/codex/src/app-server/**
       - src/agents/agent-tools.ts
+      - src/agents/agent-tools-agent-config.exec.test.ts
       - src/agents/bash-tools.exec*
       - src/config/config.exec-resource-limits.test.ts
       - src/config/schema.help.ts
@@ -20,6 +21,7 @@ on:
       - .github/workflows/exec-resource-limits.yml
       - extensions/codex/src/app-server/**
       - src/agents/agent-tools.ts
+      - src/agents/agent-tools-agent-config.exec.test.ts
       - src/agents/bash-tools.exec*
       - src/config/config.exec-resource-limits.test.ts
       - src/config/schema.help.ts
@@ -89,6 +91,7 @@ jobs:
           src/agents/bash-tools.exec-runtime.test.ts
           src/agents/bash-tools.exec-host-gateway.test.ts
           src/agents/bash-tools.exec.security-floor.test.ts
+          src/agents/agent-tools-agent-config.exec.test.ts
           src/config/config.exec-resource-limits.test.ts
           extensions/codex/src/app-server/dynamic-tool-build.test.ts
           extensions/codex/src/app-server/native-execution-policy.test.ts

@@ -159,7 +159,8 @@ Existing authorization, allowlists, and approvals still apply. Node, sandbox,
 elevated, and PTY execution are refused while the policy is configured. An
 unavailable user manager or an unbudgeted slice fails closed. Shell snapshot
 capture is skipped because it starts a separate shell; shell startup executes
-inside the command service instead.
+inside the command service instead. The gateway's separate login-shell PATH
+probe still runs outside the command service and is not covered by its budget.
 
 Configured Codex turns disable the native execution environment and expose the
 allowed OpenClaw shell and filesystem tools instead. Tool allowlists and plugin
@@ -168,11 +169,27 @@ stops the service; completion verifies that the command cgroup has no remaining
 descendants. Termination sends TERM, then KILL after the configured grace period.
 
 `exec.process.containment` diagnostics associate the session and tool call with
-the service, cgroup, times, exit result, and observed child PID and memory peak.
+the service, expected cgroup, times, exit result, and observed cgroup, child PID
+and memory peak. A reported service cgroup must match the expected command path.
 Very short successful units may unload before PID or peak observation; those
 fields are omitted. Cleanup failures emit `cleanupVerified: false` and refuse
 completion; an absent path alone is not treated as successful cleanup. These
-events do not contain command bodies or environment values. Resource budgets do not replace sandbox isolation or permission policy.
+events do not contain command bodies or environment values. If service control
+fails, OpenClaw terminates the launcher and refuses verified completion. A unit
+queued during startup refusal can still start later inside the budgeted slice
+and run until its service deadline; native host qualification must cover this race.
+
+Commands run as the gateway user and can normally reach that user's systemd
+manager. A command can change its unit or slice limits, or start another unit
+outside the workload slice. These budgets protect against accidental runaway
+commands; they do not contain adversarial commands or replace sandbox isolation
+and permission policy.
+
+Command environment values are copied into transient unit configuration under
+the user runtime directory and are visible through the user manager, including
+`systemctl --user show`, during the unit's lifetime. Passing values outside argv
+and diagnostic events does not prevent this additional on-disk copy or make the
+environment a secret store.
 
 ### Modes
 

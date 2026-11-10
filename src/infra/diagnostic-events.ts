@@ -505,7 +505,8 @@ export type DiagnosticExecProcessContainmentEvent = DiagnosticBaseEvent & {
   sessionId: string;
   toolCallId?: string;
   unit: string;
-  cgroup: string;
+  expectedCgroup: string;
+  cgroup?: string;
   childPid?: number;
   startedAtMs: number;
   endedAtMs?: number;

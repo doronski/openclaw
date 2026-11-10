@@ -25,6 +25,7 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
   let selfCgroup: string;
   let serviceObserved: boolean;
   let servicePid: string;
+  let serviceCgroup: string | undefined;
   const killLauncher = vi.fn();
   const stdout = vi.fn();
   const stderr = vi.fn();
@@ -51,6 +52,7 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
     selfCgroup = "/user.slice/app.slice/gateway.service";
     serviceObserved = true;
     servicePid = "1234";
+    serviceCgroup = undefined;
     const exit = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
       finish = resolve;
     });
@@ -78,7 +80,7 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
           null,
           args.at(-1) === "commands.slice"
             ? "LoadState=loaded\nActiveState=active\nControlGroup=/user.slice/commands.slice\n"
-            : `LoadState=loaded\nActiveState=${stopSucceeds ? "inactive" : "active"}\nExecMainPID=${servicePid}\nMemoryPeak=4096\nResult=${serviceResult}\n`,
+            : `LoadState=loaded\nActiveState=${stopSucceeds ? "inactive" : "active"}\nControlGroup=${serviceCgroup ?? `/user.slice/commands.slice/${args.at(-1)}`}\nExecMainPID=${servicePid}\nMemoryPeak=4096\nResult=${serviceResult}\n`,
           "",
         );
       } else {
@@ -102,6 +104,7 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
     });
   });
   afterEach(() => {
+    killLauncher.mockReset();
     vi.unstubAllGlobals();
   });
 
@@ -152,6 +155,7 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
         memoryPeakBytes: 4096,
         unit: expect.stringMatching(/^openclaw-exec-.*\.service$/),
         cgroup: expect.stringMatching(/^\/user.slice\/commands.slice\/openclaw-exec-/),
+        expectedCgroup: expect.stringMatching(/^\/user.slice\/commands.slice\/openclaw-exec-/),
       }),
     );
     expect(JSON.stringify(mocks.emitDiagnosticEvent.mock.calls)).not.toContain("private-value");
@@ -216,6 +220,13 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
     finish({ code: 0, signal: null });
     const adapter = await createSystemdUserAdapter(input());
     await expect(adapter.wait()).resolves.toMatchObject({ code: 0 });
+    expect(mocks.emitDiagnosticEvent).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        cgroup: undefined,
+        expectedCgroup: expect.stringMatching(/^\/user.slice\/commands.slice\/openclaw-exec-/),
+      }),
+    );
     expect(mocks.emitDiagnosticEvent).toHaveBeenLastCalledWith(
       expect.objectContaining({ childPid: undefined, cleanupVerified: true }),
     );
@@ -287,6 +298,48 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
     populated = true;
     finish({ code: 0, signal: null });
     await expect(adapter.wait()).rejects.toThrow("still populated");
+    adapter.dispose();
+  });
+
+  it("rejects a service observed outside its expected cgroup even when the expected path is absent", async () => {
+    const adapter = await createSystemdUserAdapter(input());
+    serviceCgroup = "/user.slice/other.slice/unexpected.service";
+    mocks.readFile.mockRejectedValue(Object.assign(new Error("absent"), { code: "ENOENT" }));
+    finish({ code: 0, signal: null });
+    await expect(adapter.wait()).rejects.toThrow("cgroup does not match");
+    expect(mocks.emitDiagnosticEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cgroup: serviceCgroup, cleanupVerified: false }),
+    );
+    adapter.dispose();
+  });
+
+  it.each(["stop", "manager"])(
+    "hard-kills a stuck launcher after %s failure without verifying service cleanup",
+    async (failure) => {
+      const adapter = await createSystemdUserAdapter(input());
+      stopSucceeds = false;
+      controlAvailable = failure !== "manager";
+      killLauncher.mockImplementation(() => finish({ code: null, signal: "SIGKILL" }));
+      adapter.kill("SIGTERM");
+      await expect(adapter.wait()).rejects.toThrow();
+      expect(killLauncher).toHaveBeenCalledWith("SIGKILL");
+      expect(mocks.emitDiagnosticEvent).toHaveBeenLastCalledWith(
+        expect.objectContaining({ phase: "completed", cleanupVerified: false }),
+      );
+      expect(mocks.execFile.mock.calls.every((call) => call[2].killSignal === "SIGKILL")).toBe(true);
+      adapter.dispose();
+    },
+  );
+
+  it("settles a stuck launcher after verified service stop", async () => {
+    const adapter = await createSystemdUserAdapter(input());
+    killLauncher.mockImplementation(() => finish({ code: null, signal: "SIGKILL" }));
+    adapter.kill("SIGTERM");
+    await expect(adapter.wait()).resolves.toMatchObject({ signal: "SIGKILL" });
+    expect(killLauncher).toHaveBeenCalledWith("SIGKILL");
+    expect(mocks.emitDiagnosticEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cleanupVerified: true }),
+    );
     adapter.dispose();
   });
 
