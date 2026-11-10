@@ -6,6 +6,7 @@ import type { EmbeddedRunAttemptParams } from "openclaw/plugin-sdk/agent-harness
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CODEX_GPT5_BEHAVIOR_CONTRACT } from "../../prompt-overlay.js";
 import { fingerprintCodexAppServerNetworkProxyConfigPatch } from "./config.js";
+import { resolveCodexSandboxEnvironmentSelection } from "./dynamic-tool-build.js";
 import {
   resetCodexTestBindingStore,
   testCodexAppServerBindingStore,
@@ -743,6 +744,49 @@ describe("Codex app-server native code mode config", () => {
       web_search: "disabled",
     });
   });
+
+  it.each([
+    { nativeToolSurfaceEnabled: false, hasSandboxEnvironment: false },
+    { nativeToolSurfaceEnabled: false, hasSandboxEnvironment: true },
+    { nativeToolSurfaceEnabled: true, hasSandboxEnvironment: false },
+    { nativeToolSurfaceEnabled: true, hasSandboxEnvironment: true },
+  ])(
+    "preserves environment selection through cwd-bearing thread and turn requests (native=$nativeToolSurfaceEnabled, sandbox=$hasSandboxEnvironment)",
+    ({ nativeToolSurfaceEnabled, hasSandboxEnvironment }) => {
+      const environment = hasSandboxEnvironment
+        ? { environmentId: "openclaw-sandbox-test", cwd: "/workspace" }
+        : undefined;
+      const environmentSelection = resolveCodexSandboxEnvironmentSelection(
+        environment,
+        nativeToolSurfaceEnabled,
+      );
+      const params = createAttemptParams({ provider: "openai" });
+      const appServer = createAppServerOptions() as never;
+      const threadRequest = buildThreadStartParams(params, {
+        cwd: "/repo",
+        dynamicTools: [],
+        appServer,
+        nativeCodeModeEnabled: nativeToolSurfaceEnabled,
+        environmentSelection,
+      });
+      const turnRequest = buildTurnStartParams(params, {
+        threadId: "thread-1",
+        cwd: "/repo",
+        appServer,
+        environmentSelection,
+      });
+      const expected = nativeToolSurfaceEnabled ? (environment ? [environment] : undefined) : [];
+
+      expect(threadRequest.cwd).toBe("/repo");
+      expect(turnRequest.cwd).toBe("/repo");
+      expect(threadRequest.environments).toEqual(expected);
+      expect(turnRequest.environments).toEqual(expected);
+      if (expected === undefined) {
+        expect(threadRequest).not.toHaveProperty("environments");
+        expect(turnRequest).not.toHaveProperty("environments");
+      }
+    },
+  );
 
   it("disables native Codex project docs for lightweight context threads", () => {
     const request = buildThreadStartParams(

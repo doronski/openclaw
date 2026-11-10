@@ -118,6 +118,8 @@ jobs:
           extensions/codex/src/app-server/dynamic-tool-build.test.ts
           extensions/codex/src/app-server/native-execution-policy.test.ts
           extensions/codex/src/app-server/thread-lifecycle.test.ts
+          extensions/codex/media-understanding-provider.test.ts
+          extensions/codex/src/web-search-provider.test.ts
       - name: Core type checks
         if: ${{ !cancelled() }}
         run: pnpm tsgo:core
