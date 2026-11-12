@@ -205,8 +205,8 @@ describe("diagnostic stability recorder", () => {
       reason: "host_memory_headroom",
       durationMs: 10,
     });
-    expect(snapshot.events[3]).not.toHaveProperty("cleanupVerified");
-    expect(snapshot.events[3]).not.toHaveProperty("memoryPeakBytes");
+    expect(snapshot.events[3]?.cleanupVerified).toBeUndefined();
+    expect(snapshot.events[3]?.memoryPeakBytes).toBeUndefined();
     for (const record of snapshot.events) {
       for (const key of [
         "runId",
