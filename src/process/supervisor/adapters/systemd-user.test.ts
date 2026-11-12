@@ -1,3 +1,4 @@
+import { addAbortSignal, Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SpawnInput } from "../types.js";
 import { createSystemdUserAdapter } from "./systemd-user.js";
@@ -504,4 +505,3 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
     adapter.dispose();
   });
 });
-import { addAbortSignal, Readable } from "node:stream";
