@@ -260,6 +260,7 @@ describe("codex media understanding provider", () => {
         { type: "image", url: "data:image/png;base64,aW1hZ2UtYnl0ZXM=" },
       ],
       cwd: "/tmp/openclaw-agent",
+      environments: [],
       approvalPolicy: "on-request",
       model: "gpt-5.4",
       effort: "low",
@@ -555,6 +556,7 @@ describe("codex media understanding provider", () => {
           model?: unknown;
           input?: Array<{ type?: unknown; text?: unknown; text_elements?: unknown; url?: unknown }>;
           cwd?: unknown;
+          environments?: unknown;
           effort?: unknown;
         }
       | undefined;
@@ -562,6 +564,7 @@ describe("codex media understanding provider", () => {
     expect(turnParams?.approvalPolicy).toBe("on-request");
     expect(turnParams?.model).toBe("gpt-5.4");
     expect(turnParams?.cwd).toBe("/tmp/openclaw-agent");
+    expect(turnParams?.environments).toEqual([]);
     expect(turnParams?.effort).toBe("low");
     expect(turnParams?.input).toHaveLength(3);
     expect(turnParams?.input?.[0]?.type).toBe("text");

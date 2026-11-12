@@ -309,6 +309,11 @@ describe("codex web search provider", () => {
       },
     });
     const threadStartCwd = (requests[1]?.params as { cwd?: string } | undefined)?.cwd;
+    expect(requests[2]?.params).toMatchObject({
+      threadId: "thread-1",
+      cwd: threadStartCwd,
+      environments: [],
+    });
     const isolatedCodexHome = isolatedStartOptions?.env?.CODEX_HOME;
     expect(threadStartCwd).not.toBe("/tmp/openclaw-agent");
     expect(isolatedStartOptions?.args).toEqual(["app-server", "--listen", "stdio://"]);

@@ -190,6 +190,8 @@ async function runBoundedCodexAppServerTurnInWorkspace(
             threadId: thread.thread.id,
             input: params.input,
             cwd: workspace.cwd,
+            // cwd alone restores Codex's default environment despite thread/start's [].
+            environments: [],
             approvalPolicy: "on-request",
             model,
             effort: "low",

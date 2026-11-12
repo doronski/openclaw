@@ -590,12 +590,17 @@ export function shouldRequireCodexSandboxExecServerEnvironment(params: {
   );
 }
 
-/** Selects the sandbox exec-server environment passed through the Codex app-server protocol. */
+/** Selects or explicitly disables native execution environments in the Codex protocol. */
 export function resolveCodexSandboxEnvironmentSelection(
   environment: CodexSandboxExecEnvironment | undefined,
   nativeToolSurfaceEnabled: boolean,
 ): CodexTurnEnvironmentParams[] | undefined {
-  return environment && nativeToolSurfaceEnabled ? [environment] : undefined;
+  // Each turn also sends cwd; omitting environments would restore Codex's
+  // default native environment even when thread/start disabled it.
+  if (!nativeToolSurfaceEnabled) {
+    return [];
+  }
+  return environment ? [environment] : undefined;
 }
 
 /** Chooses the cwd visible to Codex native execution after sandbox exec-server setup. */
