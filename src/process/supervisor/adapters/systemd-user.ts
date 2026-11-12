@@ -252,6 +252,7 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
   const directory = cgroupDirectory(expectedCgroup);
   const timeoutMs = Math.min(input.timeoutMs ?? Infinity, limits.timeoutSec * 1000);
   const startedAtMs = Date.now();
+  const startupDeadline = startedAtMs + Math.min(timeoutMs, CONTROL_TIMEOUT_MS);
   const env = input.env ?? process.env;
   const names = Object.keys(env).filter((name) => env[name] !== undefined);
   if (names.some((name) => !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name))) {
@@ -325,6 +326,9 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
       });
       throw new Error(`exec systemd-user host memory admission refused: ${refusal}`);
     }
+  }
+  if (Date.now() >= startupDeadline) {
+    throw new Error("exec systemd-user service did not start before its deadline");
   }
   const child = await createChildAdapter({
     argv,
@@ -462,7 +466,6 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
   };
   // Fast successful units can unload before inspection. Keep unknown PID/peak
   // absent; successful systemd-run --wait still proves the service terminated.
-  const startupDeadline = startedAtMs + Math.min(timeoutMs, CONTROL_TIMEOUT_MS);
   while (true) {
     await observe();
     if (controlFailure) {

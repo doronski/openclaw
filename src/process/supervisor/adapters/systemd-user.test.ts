@@ -281,6 +281,32 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
     expect(mocks.createChildAdapter).not.toHaveBeenCalled();
   });
 
+  it.each([100, 200])("rejects before launch when valid metrics take %i ms of a 100 ms budget", async (elapsedMs) => {
+    vi.useFakeTimers();
+    const streams: Readable[] = [];
+    mocks.createReadStream.mockImplementation((file: string, options: { signal: AbortSignal }) => {
+      const value = file.endsWith("memory.max")
+        ? sliceMemory
+        : file === "/proc/meminfo"
+          ? meminfo
+          : memoryPressure;
+      const stream = addAbortSignal(options.signal, Readable.from((async function* () {
+        await new Promise<void>((resolve) => setTimeout(resolve, elapsedMs));
+        yield Buffer.from(value);
+      })()));
+      streams.push(stream);
+      return stream;
+    });
+    const result = expect(createSystemdUserAdapter({ ...admittedInput(), timeoutMs: 100 }))
+      .rejects.toThrow("service did not start before its deadline");
+    await vi.advanceTimersByTimeAsync(elapsedMs);
+    await result;
+    expect(streams).toHaveLength(3);
+    expect(streams.every((stream) => stream.destroyed)).toBe(true);
+    expect(mocks.createChildAdapter).not.toHaveBeenCalled();
+    expect(argsCalls().some((args) => args[2] === "stop")).toBe(false);
+  });
+
   it("does not disclose metric read errors", async () => {
     mocks.createReadStream.mockImplementation(() => { throw new Error("private-value"); });
     await expect(createSystemdUserAdapter(admittedInput())).rejects.toThrow("host_memory_metrics_unavailable");
