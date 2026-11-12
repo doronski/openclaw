@@ -155,6 +155,34 @@ A per-call `timeout` can shorten this deadline, but `timeout: 0` or a longer tim
 cannot raise it. Use an operator-configured `agents.list[].tools.exec.resourceLimits`
 override for a deliberately larger job role.
 
+To add host-memory admission, set `resourceLimits.hostMemoryAdmission` with both
+`minAvailableBytes` (a positive safe integer byte count) and
+`maxFullPressureAvg10` (a finite percentage from 0 to 100). It is off when absent;
+there are no default thresholds. Choose thresholds for the host and workload.
+The same option is available in per-agent resource limits.
+
+Before starting the command, admission requires Linux `MemAvailable` to cover
+`minAvailableBytes` **plus the entire current slice `memory.max`**, and memory PSI
+`full avg10` to be at or below `maxFullPressureAvg10`. The kernel reports
+[MemAvailable](https://docs.kernel.org/filesystems/proc.html) as an estimate of
+memory available without swapping; [PSI](https://docs.kernel.org/accounting/psi.html)
+`full avg10` is the ten-second average percentage of time all non-idle tasks were
+stalled for memory. Each metric read is capped at 64 KiB and aborted after one
+second. Missing, malformed, oversized, or unreadable metrics refuse the command
+before launch. Refusals emit `exec.process.containment` with `phase: "refused"`
+and a fixed `host_memory_*` result; they do not retry or queue the command.
+
+Reserving the entire slice limit covers concurrent commands that have not yet
+charged memory against their shared aggregate. It deliberately counts already
+charged slice memory again, so it can refuse a start that would have been safe.
+It does not subtract a separately sampled `memory.current`, whose release and
+recharge can race with the host sample. This is admission for commands using the
+configured policy, not host-wide enforcement or an atomic memory reservation.
+Unmanaged workloads, GPU allocations, changes to slice limits, and allocations
+between sampling and launch can still consume headroom. The kernel can also
+temporarily exceed [memory.max](https://docs.kernel.org/admin-guide/cgroup-v2.html).
+Existing command and aggregate limits remain the enforcement boundary.
+
 Existing authorization, allowlists, and approvals still apply. Node, sandbox,
 elevated, and PTY execution are refused while the policy is configured. An
 unavailable user manager or an unbudgeted slice fails closed. Shell snapshot

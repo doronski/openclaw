@@ -316,6 +316,13 @@ export type ExecResourceLimitsConfig = {
   backend: "systemd-user";
   /** Existing workload slice with a finite aggregate memory and task budget. */
   slice: string;
+  /** Optional host admission; absent disables host metric reads and admission checks. */
+  hostMemoryAdmission?: {
+    /** Positive host headroom required in addition to the entire finite workload slice memory.max. */
+    minAvailableBytes: number;
+    /** Maximum Linux memory PSI full avg10 percentage (0–100). */
+    maxFullPressureAvg10: number;
+  };
   memoryHighBytes?: number;
   memoryMaxBytes?: number;
   memorySwapMaxBytes?: number;

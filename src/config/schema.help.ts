@@ -452,6 +452,12 @@ export const FIELD_HELP: Record<string, string> = {
   "tools.exec.resourceLimits":
     "Opt-in Linux systemd user-service containment for every exec command. Requires a preconfigured aggregate workload slice; unavailable or incompatible execution fails closed. Use an agent-specific override for deliberately larger jobs.",
   "tools.exec.resourceLimits.backend": "Resource backend; currently systemd-user only.",
+  "tools.exec.resourceLimits.hostMemoryAdmission":
+    "Optional Linux host-memory admission before contained command launch (off when absent). Requires bounded, valid MemAvailable and memory PSI reads; refuses without launching or retrying when unavailable or thresholds fail. Applies only to commands using this policy, not all host workloads.",
+  "tools.exec.resourceLimits.hostMemoryAdmission.minAvailableBytes":
+    "Positive host headroom in bytes required in addition to the entire finite slice memory.max. Conservatively counts already-charged slice memory again to cover concurrent launches without separate reservations. Unmanaged/GPU allocations and concurrent policy changes remain outside this admission guarantee.",
+  "tools.exec.resourceLimits.hostMemoryAdmission.maxFullPressureAvg10":
+    "Maximum Linux /proc/pressure/memory full avg10 percentage (finite, 0–100). This is the ten-second average of time all non-idle tasks were stalled for memory, not a capacity or throughput guarantee.",
   "tools.exec.resourceLimits.slice":
     "Existing user workload slice with finite memory.max and pids.max budgets.",
   "tools.exec.resourceLimits.memoryHighBytes":

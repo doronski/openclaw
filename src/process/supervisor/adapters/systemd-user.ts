@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -12,6 +13,8 @@ const SYSTEMCTL = "/usr/bin/systemctl";
 const SYSTEMD_RUN = "/usr/bin/systemd-run";
 const CONTROL_TIMEOUT_MS = 10_000;
 const CGROUP_ROOT = "/sys/fs/cgroup";
+const HOST_METRIC_TIMEOUT_MS = 1_000;
+const HOST_METRIC_MAX_BYTES = 64 * 1024;
 const DEFAULT_LIMITS = {
   memoryHighBytes: 1_073_741_824,
   memoryMaxBytes: 2_147_483_648,
@@ -21,12 +24,13 @@ const DEFAULT_LIMITS = {
   killGraceSec: 5,
 };
 
-type Limits = Required<ExecResourceLimitsConfig>;
+type Limits = ExecResourceLimitsConfig & typeof DEFAULT_LIMITS;
 type Properties = Record<string, string>;
 type Input = Extract<SpawnInput, { mode: "child" }> & { runId: string };
 
 export function resolveSystemdUserLimits(config: ExecResourceLimitsConfig): Limits {
   const limits = { ...DEFAULT_LIMITS, ...config };
+  const admission = limits.hostMemoryAdmission;
   if (
     limits.backend !== "systemd-user" ||
     !/^[a-zA-Z0-9][a-zA-Z0-9_-]*\.slice$/.test(limits.slice) ||
@@ -36,9 +40,19 @@ export function resolveSystemdUserLimits(config: ExecResourceLimitsConfig): Limi
     }) ||
     limits.memoryHighBytes > limits.memoryMaxBytes ||
     limits.timeoutSec > 2_147_483 ||
-    limits.killGraceSec > 2_147_483
+    limits.killGraceSec > 2_147_483 ||
+    (admission !== undefined &&
+      (!admission ||
+        !Number.isSafeInteger(admission.minAvailableBytes) ||
+        admission.minAvailableBytes <= 0 ||
+        !Number.isFinite(admission.maxFullPressureAvg10) ||
+        admission.maxFullPressureAvg10 < 0 ||
+        admission.maxFullPressureAvg10 > 100))
   ) {
     throw new Error("Invalid exec systemd-user resourceLimits");
+  }
+  if (admission) {
+    limits.hostMemoryAdmission = { ...admission };
   }
   return limits;
 }
@@ -141,6 +155,86 @@ function finiteNumber(value: string | undefined): number | undefined {
   return Number.isSafeInteger(number) ? number : undefined;
 }
 
+async function readHostMetric(file: string): Promise<string> {
+  const controller = new AbortController();
+  const stream = createReadStream(file, {
+    start: 0,
+    // end is inclusive: the extra byte detects oversized input without reading it all.
+    end: HOST_METRIC_MAX_BYTES,
+    highWaterMark: HOST_METRIC_MAX_BYTES + 1,
+    signal: controller.signal,
+  });
+  const timeout = setTimeout(() => controller.abort(), HOST_METRIC_TIMEOUT_MS);
+  timeout.unref();
+  try {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    for await (const chunk of stream) {
+      if (!Buffer.isBuffer(chunk)) {
+        throw new Error("Invalid host metric bytes");
+      }
+      bytes += chunk.length;
+      if (bytes > HOST_METRIC_MAX_BYTES) {
+        throw new Error("Host metric exceeds read bound");
+      }
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  } finally {
+    clearTimeout(timeout);
+    stream.destroy();
+  }
+}
+
+async function hostMemoryRefusal(
+  policy: NonNullable<Limits["hostMemoryAdmission"]>,
+  sliceCgroup: string,
+): Promise<"host_memory_metrics_unavailable" | "host_memory_headroom" | "host_memory_pressure" | undefined> {
+  try {
+    // Re-read the aggregate limit immediately before admission, not the earlier slice check.
+    const reads = await Promise.allSettled([
+      readHostMetric(path.join(cgroupDirectory(sliceCgroup), "memory.max")),
+      readHostMetric("/proc/meminfo"),
+      readHostMetric("/proc/pressure/memory"),
+    ]);
+    if (reads.some((read) => read.status === "rejected")) {
+      return "host_memory_metrics_unavailable";
+    }
+    const [memoryMax, meminfo, pressure] = reads.map((read) =>
+      read.status === "fulfilled" ? read.value : "",
+    );
+    const aggregateBytes = finiteNumber(memoryMax.trim());
+    const availableLines = meminfo.split("\n").filter((line) => line.startsWith("MemAvailable:"));
+    const availableMatch = availableLines.length === 1
+      ? /^MemAvailable:\s+([0-9]+)\s+kB$/.exec(availableLines[0])
+      : null;
+    const availableKiB = finiteNumber(availableMatch?.[1]);
+    const availableBytes = availableKiB === undefined ? undefined : availableKiB * 1024;
+    const fullLines = pressure.split("\n").filter((line) => /^full(?:\s|$)/.test(line));
+    const full = fullLines.length === 1
+      ? /^full avg10=([0-9]+(?:\.[0-9]+)?) avg60=([0-9]+(?:\.[0-9]+)?) avg300=([0-9]+(?:\.[0-9]+)?) total=[0-9]+$/.exec(fullLines[0])
+      : null;
+    if (
+      !aggregateBytes ||
+      availableBytes === undefined ||
+      !Number.isSafeInteger(availableBytes) ||
+      !full ||
+      full.slice(1).some((value) => !Number.isFinite(Number(value)) || Number(value) > 100)
+    ) {
+      return "host_memory_metrics_unavailable";
+    }
+    // Reserve the entire finite aggregate, including concurrent not-yet-charged jobs.
+    // Subtracting a separately sampled memory.current would permit release/recharge races.
+    if (BigInt(availableBytes) < BigInt(policy.minAvailableBytes) + BigInt(aggregateBytes)) {
+      return "host_memory_headroom";
+    }
+    return Number(full[1]) > policy.maxFullPressureAvg10 ? "host_memory_pressure" : undefined;
+  } catch {
+    // Never expose raw file contents, errors, command arguments, or environment values.
+    return "host_memory_metrics_unavailable";
+  }
+}
+
 /** Own only the command service: the gateway and model runner stay outside its cgroup. */
 export async function createSystemdUserAdapter(input: Input): Promise<SpawnProcessAdapter> {
   if (process.platform !== "linux" || !input.resourceLimits || !input.cwd) {
@@ -213,6 +307,25 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
     "--",
     ...input.argv,
   ];
+  if (limits.hostMemoryAdmission) {
+    const refusal = await hostMemoryRefusal(limits.hostMemoryAdmission, sliceCgroup);
+    if (refusal) {
+      emitDiagnosticEvent({
+        type: "exec.process.containment",
+        phase: "refused",
+        runId: input.runId,
+        sessionId: input.sessionId,
+        toolCallId: input.toolCallId,
+        unit,
+        expectedCgroup,
+        startedAtMs,
+        endedAtMs: Date.now(),
+        result: refusal,
+        exitCode: null,
+      });
+      throw new Error(`exec systemd-user host memory admission refused: ${refusal}`);
+    }
+  }
   const child = await createChildAdapter({
     argv,
     cwd: input.cwd,

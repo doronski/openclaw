@@ -176,10 +176,16 @@ describe("diagnostic stability recorder", () => {
       cleanupVerified: false,
       result: "private free-form error",
     });
+    emitDiagnosticEvent({
+      ...event,
+      phase: "refused",
+      endedAtMs: 110,
+      result: "host_memory_headroom",
+    });
     await waitForDiagnosticEventsDrained();
 
     const snapshot = getDiagnosticStabilitySnapshot();
-    expect(snapshot.events).toHaveLength(3);
+    expect(snapshot.events).toHaveLength(4);
     expect(snapshot.events[0]).not.toHaveProperty("cgroupMatches");
     expect(snapshot.events[0]?.cleanupVerified).toBeUndefined();
     expect(snapshot.events[0]?.memoryPeakBytes).toBeUndefined();
@@ -194,6 +200,13 @@ describe("diagnostic stability recorder", () => {
     });
     expectFields(snapshot.events[2], { cgroupMatches: false, cleanupVerified: false });
     expect(snapshot.events[2]).not.toHaveProperty("reason");
+    expectFields(snapshot.events[3], {
+      phase: "refused",
+      reason: "host_memory_headroom",
+      durationMs: 10,
+    });
+    expect(snapshot.events[3]).not.toHaveProperty("cleanupVerified");
+    expect(snapshot.events[3]).not.toHaveProperty("memoryPeakBytes");
     for (const record of snapshot.events) {
       for (const key of [
         "runId",
