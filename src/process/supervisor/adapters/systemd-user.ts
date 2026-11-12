@@ -15,6 +15,7 @@ const CONTROL_TIMEOUT_MS = 10_000;
 const CGROUP_ROOT = "/sys/fs/cgroup";
 const HOST_METRIC_TIMEOUT_MS = 1_000;
 const HOST_METRIC_MAX_BYTES = 64 * 1024;
+const HOST_METRIC_MAX_CGROUP_DEPTH = 64;
 const DEFAULT_LIMITS = {
   memoryHighBytes: 1_073_741_824,
   memoryMaxBytes: 2_147_483_648,
@@ -155,7 +156,15 @@ function finiteNumber(value: string | undefined): number | undefined {
   return Number.isSafeInteger(number) ? number : undefined;
 }
 
-async function readHostMetric(file: string): Promise<string> {
+function cgroupBytes(value: string): bigint | undefined {
+  return /^[0-9]+$/.test(value) ? BigInt(value) : undefined;
+}
+
+async function readHostMetric(file: string, deadline: number): Promise<string> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    throw new Error("Host metric read deadline expired");
+  }
   const controller = new AbortController();
   const stream = createReadStream(file, {
     start: 0,
@@ -164,7 +173,7 @@ async function readHostMetric(file: string): Promise<string> {
     highWaterMark: HOST_METRIC_MAX_BYTES + 1,
     signal: controller.signal,
   });
-  const timeout = setTimeout(() => controller.abort(), HOST_METRIC_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), remainingMs);
   timeout.unref();
   try {
     const chunks: Buffer[] = [];
@@ -182,38 +191,70 @@ async function readHostMetric(file: string): Promise<string> {
     return Buffer.concat(chunks).toString("utf8");
   } finally {
     clearTimeout(timeout);
-    stream.destroy();
+    if (!stream.closed) {
+      const closed = new Promise<void>((resolve) => stream.once("close", resolve));
+      stream.destroy();
+      await closed;
+    }
   }
 }
 
 async function hostMemoryRefusal(
   policy: NonNullable<Limits["hostMemoryAdmission"]>,
   sliceCgroup: string,
-): Promise<"host_memory_metrics_unavailable" | "host_memory_headroom" | "host_memory_pressure" | undefined> {
+  startupDeadline: number,
+): Promise<
+  "host_memory_metrics_unavailable" | "host_memory_headroom" | "host_memory_pressure" | undefined
+> {
   try {
+    const components = sliceCgroup.split("/").slice(1);
+    if (
+      components.length > HOST_METRIC_MAX_CGROUP_DEPTH ||
+      components.some((component) => !component || component === "." || component === "..")
+    ) {
+      return "host_memory_metrics_unavailable";
+    }
+    const directory = cgroupDirectory(sliceCgroup);
+    const ancestors: string[] = [];
+    // Root has no memory.max/current interfaces. Every non-root ancestor restricts descendants.
+    for (
+      let parent = path.dirname(directory);
+      parent !== CGROUP_ROOT;
+      parent = path.dirname(parent)
+    ) {
+      ancestors.push(parent);
+    }
+    const metricDeadline = Math.min(startupDeadline, Date.now() + HOST_METRIC_TIMEOUT_MS);
     // Re-read the aggregate limit immediately before admission, not the earlier slice check.
     const reads = await Promise.allSettled([
-      readHostMetric(path.join(cgroupDirectory(sliceCgroup), "memory.max")),
-      readHostMetric("/proc/meminfo"),
-      readHostMetric("/proc/pressure/memory"),
+      readHostMetric(path.join(directory, "memory.max"), metricDeadline),
+      readHostMetric("/proc/meminfo", metricDeadline),
+      readHostMetric("/proc/pressure/memory", metricDeadline),
+      ...ancestors.map((ancestor) =>
+        readHostMetric(path.join(ancestor, "memory.max"), metricDeadline),
+      ),
     ]);
     if (reads.some((read) => read.status === "rejected")) {
       return "host_memory_metrics_unavailable";
     }
-    const [memoryMax, meminfo, pressure] = reads.map((read) =>
+    const [memoryMax, meminfo, pressure, ...ancestorMaxima] = reads.map((read) =>
       read.status === "fulfilled" ? read.value : "",
     );
     const aggregateBytes = finiteNumber(memoryMax.trim());
     const availableLines = meminfo.split("\n").filter((line) => line.startsWith("MemAvailable:"));
-    const availableMatch = availableLines.length === 1
-      ? /^MemAvailable:\s+([0-9]+)\s+kB$/.exec(availableLines[0])
-      : null;
+    const availableMatch =
+      availableLines.length === 1
+        ? /^MemAvailable:\s+([0-9]+)\s+kB$/.exec(availableLines[0])
+        : null;
     const availableKiB = finiteNumber(availableMatch?.[1]);
     const availableBytes = availableKiB === undefined ? undefined : availableKiB * 1024;
     const fullLines = pressure.split("\n").filter((line) => /^full(?:\s|$)/.test(line));
-    const full = fullLines.length === 1
-      ? /^full avg10=([0-9]+(?:\.[0-9]+)?) avg60=([0-9]+(?:\.[0-9]+)?) avg300=([0-9]+(?:\.[0-9]+)?) total=[0-9]+$/.exec(fullLines[0])
-      : null;
+    const full =
+      fullLines.length === 1
+        ? /^full avg10=([0-9]+(?:\.[0-9]+)?) avg60=([0-9]+(?:\.[0-9]+)?) avg300=([0-9]+(?:\.[0-9]+)?) total=[0-9]+$/.exec(
+            fullLines[0],
+          )
+        : null;
     if (
       !aggregateBytes ||
       availableBytes === undefined ||
@@ -227,6 +268,31 @@ async function hostMemoryRefusal(
     // Subtracting a separately sampled memory.current would permit release/recharge races.
     if (BigInt(availableBytes) < BigInt(policy.minAvailableBytes) + BigInt(aggregateBytes)) {
       return "host_memory_headroom";
+    }
+    const finiteAncestors = ancestorMaxima.flatMap((value, index) =>
+      value.trim() === "max"
+        ? []
+        : [{ directory: ancestors[index], maximum: cgroupBytes(value.trim()) }],
+    );
+    if (finiteAncestors.some((ancestor) => ancestor.maximum === undefined)) {
+      return "host_memory_metrics_unavailable";
+    }
+    const currents = await Promise.allSettled(
+      finiteAncestors.map((ancestor) =>
+        readHostMetric(path.join(ancestor.directory, "memory.current"), metricDeadline),
+      ),
+    );
+    const requiredBytes = BigInt(policy.minAvailableBytes) + BigInt(aggregateBytes);
+    for (const [index, read] of currents.entries()) {
+      const current = read.status === "fulfilled" ? cgroupBytes(read.value.trim()) : undefined;
+      const maximum = finiteAncestors[index].maximum;
+      if (current === undefined || maximum === undefined) {
+        return "host_memory_metrics_unavailable";
+      }
+      // Parent current already includes descendants; credit none of the leaf's existing charges.
+      if (maximum - current < requiredBytes) {
+        return "host_memory_headroom";
+      }
     }
     return Number(full[1]) > policy.maxFullPressureAvg10 ? "host_memory_pressure" : undefined;
   } catch {
@@ -309,7 +375,17 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
     ...input.argv,
   ];
   if (limits.hostMemoryAdmission) {
-    const refusal = await hostMemoryRefusal(limits.hostMemoryAdmission, sliceCgroup);
+    if (Date.now() >= startupDeadline) {
+      throw new Error("exec systemd-user service did not start before its deadline");
+    }
+    const refusal = await hostMemoryRefusal(
+      limits.hostMemoryAdmission,
+      sliceCgroup,
+      startupDeadline,
+    );
+    if (Date.now() >= startupDeadline) {
+      throw new Error("exec systemd-user service did not start before its deadline");
+    }
     if (refusal) {
       emitDiagnosticEvent({
         type: "exec.process.containment",

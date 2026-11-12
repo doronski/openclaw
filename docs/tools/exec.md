@@ -160,6 +160,10 @@ To add host-memory admission, set `resourceLimits.hostMemoryAdmission` with both
 `maxFullPressureAvg10` (a finite percentage from 0 to 100). It is off when absent;
 there are no default thresholds. Choose thresholds for the host and workload.
 The same option is available in per-agent resource limits.
+All admitted roles on one host must use the same reviewed aggregate workload
+slice, including roles with larger per-command limits. Separate slices or
+gateways require a deployment review of their combined budgets; admission does
+not coordinate reservations between them.
 
 Before starting the command, admission requires Linux `MemAvailable` to cover
 `minAvailableBytes` **plus the entire current slice `memory.max`**, and memory PSI
@@ -167,8 +171,17 @@ Before starting the command, admission requires Linux `MemAvailable` to cover
 [MemAvailable](https://docs.kernel.org/filesystems/proc.html) as an estimate of
 memory available without swapping; [PSI](https://docs.kernel.org/accounting/psi.html)
 `full avg10` is the ten-second average percentage of time all non-idle tasks were
-stalled for memory. Each metric read is capped at 64 KiB and aborted after one
-second. Missing, malformed, oversized, or unreadable metrics refuse the command
+stalled for memory. Admission also checks each finite non-root ancestor's
+`memory.max` minus `memory.current` against that same aggregate-plus-headroom
+requirement. Ancestor usage includes all descendants; existing workload charges
+are not credited back. Explicitly unlimited ancestors need no usage check. The
+cgroup root has no memory limit/usage interfaces and is excluded.
+
+The hierarchy is limited to 64 path components and at most 129 metric reads.
+Each read is capped at 64 KiB; all reads share the earlier of a one-second metric
+deadline and the remaining startup deadline, and readers close before admission
+returns. Startup expiry takes precedence over a metric refusal. Missing,
+malformed, oversized, or unreadable non-root metrics refuse the command
 before launch. Refusals emit `exec.process.containment` with `phase: "refused"`
 and a fixed `host_memory_*` result; they do not retry or queue the command.
 
@@ -181,7 +194,10 @@ configured policy, not host-wide enforcement or an atomic memory reservation.
 Unmanaged workloads, GPU allocations, changes to slice limits, and allocations
 between sampling and launch can still consume headroom. The kernel can also
 temporarily exceed [memory.max](https://docs.kernel.org/admin-guide/cgroup-v2.html).
-Existing command and aggregate limits remain the enforcement boundary.
+Finite ancestors can conservatively refuse admission even with ample global
+memory. Their usage and the host sample are not atomic reservations, and sibling
+allocations can still race. Existing command and aggregate limits remain the
+enforcement boundary.
 
 Existing authorization, allowlists, and approvals still apply. Node, sandbox,
 elevated, and PTY execution are refused while the policy is configured. An
