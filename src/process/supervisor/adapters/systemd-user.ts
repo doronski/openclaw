@@ -294,7 +294,7 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
     return stopPromise;
   };
   const audit = (
-    phase: "started" | "completed",
+    phase: "started" | "completed" | "disposed",
     exitCode: number | null,
     cleanupVerified?: boolean,
   ) => {
@@ -459,6 +459,9 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
       });
     },
     dispose: () => {
+      if (!finished) {
+        audit("disposed", null);
+      }
       finished = true;
       clearInterval(pollTimer);
       child.dispose();

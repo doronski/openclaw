@@ -109,7 +109,7 @@ describe("audit event persistence", () => {
       },
     });
     onTrustedToolExecutionEvent(recorder.recordTool);
-    onAgentAuditEvent(recorder.record);
+    onAgentAuditEvent(recorder.recordPrivate);
     setDiagnosticsEnabledForProcess(false);
     emitTrustedDiagnosticEvent(toolEvent());
     const original = listAuditEvents({ database, limit: 10 }).events[0];
@@ -194,43 +194,93 @@ describe("audit event persistence", () => {
     await recorder.stop();
   });
 
-  it("leaves unknown or ambiguously reused tool identities unbound", async () => {
-    const database = createDatabaseOptions();
+  it.each([
+    {
+      label: "across runs",
+      overrides: { runId: "another-run", sessionId: "another-session", seq: 2 },
+    },
+    { label: "within one run", overrides: { seq: 2 } },
+  ])(
+    "leaves unknown or ambiguously reused tool identities $label unbound",
+    async ({ overrides }) => {
+      const database = createDatabaseOptions();
+      const recorder = createAgentEventAuditRecorder({
+        writer: {
+          ready: Promise.resolve(),
+          record: (input) => {
+            recordAuditEvent(input, database);
+            return true;
+          },
+          stop: async () => {},
+        },
+      });
+      recorder.recordTool(toolEvent());
+      recorder.recordTool(toolEvent(overrides));
+      for (const toolCallId of ["call-1", "missing-call"]) {
+        recorder.recordPrivate({
+          runId: "process-1",
+          seq: 1,
+          ts: Date.now(),
+          stream: "exec.process.containment",
+          sessionKey: "agent:coder:main",
+          data: {
+            phase: "started",
+            toolCallId,
+            unit: "openclaw-exec-test.service",
+            expectedCgroup: "/commands/test",
+            cgroup: "/commands/test",
+            childPid: 4321,
+            startedAtMs: Date.now(),
+          },
+        });
+      }
+      const { db } = openOpenClawStateDatabase(database);
+      expect(
+        db.prepare("SELECT count(*) AS n FROM audit_events WHERE exec_pid IS NOT NULL").get()?.n,
+      ).toBe(0);
+      expect(listAuditEvents({ database, limit: 10 }).events).toHaveLength(2);
+      await recorder.stop();
+    },
+  );
+
+  it("discards disposed process bindings without claiming a terminal result", async () => {
+    const writes: AuditEventInput[] = [];
     const recorder = createAgentEventAuditRecorder({
       writer: {
         ready: Promise.resolve(),
         record: (input) => {
-          recordAuditEvent(input, database);
+          writes.push(input);
           return true;
         },
         stop: async () => {},
       },
     });
     recorder.recordTool(toolEvent());
-    recorder.recordTool(toolEvent({ runId: "another-run", sessionId: "another-session", seq: 2 }));
-    for (const toolCallId of ["call-1", "missing-call"]) {
-      recorder.record({
-        runId: "process-1",
-        seq: 1,
-        ts: Date.now(),
-        stream: "exec.process.containment",
-        sessionKey: "agent:coder:main",
-        data: {
-          phase: "started",
-          toolCallId,
-          unit: "openclaw-exec-test.service",
-          expectedCgroup: "/commands/test",
-          cgroup: "/commands/test",
-          childPid: 4321,
-          startedAtMs: Date.now(),
-        },
-      });
-    }
-    const { db } = openOpenClawStateDatabase(database);
-    expect(
-      db.prepare("SELECT count(*) AS n FROM audit_events WHERE exec_pid IS NOT NULL").get()?.n,
-    ).toBe(0);
-    expect(listAuditEvents({ database, limit: 10 }).events).toHaveLength(2);
+    const event = {
+      runId: "process-1",
+      seq: 1,
+      ts: Date.now(),
+      stream: "exec.process.containment",
+      sessionKey: "agent:coder:main",
+      data: {
+        phase: "started",
+        toolCallId: "call-1",
+        unit: "openclaw-exec-test.service",
+        expectedCgroup: "/commands/test",
+        childPid: 4321,
+        startedAtMs: Date.now(),
+      },
+    };
+    recorder.recordPrivate(event);
+    recorder.recordPrivate({ ...event, data: { ...event.data, phase: "disposed" } });
+    recorder.recordPrivate({
+      ...event,
+      data: { ...event.data, phase: "completed", endedAtMs: Date.now(), cleanupVerified: true },
+    });
+    expect(writes).toHaveLength(2);
+    expect(writes[1]?.execProcess).toMatchObject({ runId: "process-1", pid: 4321 });
+    expect(writes[1]?.execProcess).not.toHaveProperty("endedAt");
+    expect(writes[1]?.execProcess).not.toHaveProperty("cleanupVerified");
     await recorder.stop();
   });
 

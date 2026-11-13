@@ -298,6 +298,7 @@ export function createAgentEventAuditRecorder(options?: {
   terminalSettleMs?: number;
 }): {
   record: (event: AgentEventPayload) => void;
+  recordPrivate: (event: AgentEventPayload) => void;
   recordTool: (event: TrustedToolExecutionEvent) => void;
   stop: () => Promise<void>;
 } {
@@ -337,6 +338,10 @@ export function createAgentEventAuditRecorder(options?: {
   };
   const recordExecProcess = (event: AgentEventPayload) => {
     const phase = event.data.phase;
+    if (phase === "disposed") {
+      execOrigins.delete(event.runId);
+      return;
+    }
     if (phase !== "started" && phase !== "completed") {
       return;
     }
@@ -386,6 +391,7 @@ export function createAgentEventAuditRecorder(options?: {
     } else {
       execOrigins.delete(event.runId);
     }
+    // The shared bounded FIFO may drop enrichment; absent fields remain unknown.
     writer.record(input);
   };
 
@@ -448,46 +454,48 @@ export function createAgentEventAuditRecorder(options?: {
     }
   };
 
+  const record = (event: AgentEventPayload) => {
+    const projection = projectAgentEvent(event);
+    if (!projection) {
+      return;
+    }
+    const runInstance = `${event.lifecycleGeneration ?? "unknown"}\0${event.runId}`;
+    if (!projection.terminal) {
+      const alreadyOpen = openRunInstances.has(runInstance);
+      clearPending(runInstance);
+      settledRunInstances.delete(runInstance);
+      if (alreadyOpen) {
+        return;
+      }
+      // Retry starts cancel a provisional terminal for the same logical run.
+      // Keep the original start so one run cannot acquire unmatched starts.
+      openRunInstances.add(runInstance);
+      writer.record(projection.input);
+      return;
+    }
+    if (settledRunInstances.has(runInstance)) {
+      return;
+    }
+    if (projection.terminal.outcome.reason === "completed" && !pendingTerminals.has(runInstance)) {
+      openRunInstances.delete(runInstance);
+      if (writer.record(projection.input)) {
+        rememberSettled(runInstance);
+      }
+      return;
+    }
+    scheduleTerminal(runInstance, { input: projection.input, ...projection.terminal });
+  };
+
   return {
-    record: (event) => {
-      // Only the core adapter's private audit bus reaches this projection.
-      // Public/plugin diagnostic events cannot mint execution-to-tool bindings.
+    record,
+    recordPrivate: (event) => {
+      // Gateway wires this entry point only to the private audit bus. Public
+      // agent events keep the lifecycle-only record path and cannot bind execs.
       if (event.stream === "exec.process.containment") {
         recordExecProcess(event);
-        return;
+      } else {
+        record(event);
       }
-      const projection = projectAgentEvent(event);
-      if (!projection) {
-        return;
-      }
-      const runInstance = `${event.lifecycleGeneration ?? "unknown"}\0${event.runId}`;
-      if (!projection.terminal) {
-        const alreadyOpen = openRunInstances.has(runInstance);
-        clearPending(runInstance);
-        settledRunInstances.delete(runInstance);
-        if (alreadyOpen) {
-          return;
-        }
-        // Retry starts cancel a provisional terminal for the same logical run.
-        // Keep the original start so one run cannot acquire unmatched starts.
-        openRunInstances.add(runInstance);
-        writer.record(projection.input);
-        return;
-      }
-      if (settledRunInstances.has(runInstance)) {
-        return;
-      }
-      if (
-        projection.terminal.outcome.reason === "completed" &&
-        !pendingTerminals.has(runInstance)
-      ) {
-        openRunInstances.delete(runInstance);
-        if (writer.record(projection.input)) {
-          rememberSettled(runInstance);
-        }
-        return;
-      }
-      scheduleTerminal(runInstance, { input: projection.input, ...projection.terminal });
     },
     recordTool: (event) => {
       const input = projectToolExecutionEventToAudit(event);
@@ -498,13 +506,27 @@ export function createAgentEventAuditRecorder(options?: {
           input.sessionKey &&
           input.toolCallId
         ) {
-          const key = `${input.sessionKey}\0${input.toolCallId}`;
-          // Reused provider call IDs across runs are ambiguous. Never let a later
-          // start relabel a deferred command from the earlier run.
-          const previous = execToolStarts.get(key);
-          const sameOrigin =
-            previous?.runId === input.runId && previous.sessionId === input.sessionId;
-          rememberBounded(execToolStarts, key, previous === undefined || sameOrigin ? input : null);
+          // Only keys carried by this trusted tool event and its resolved lifecycle
+          // may name the original row; alternate execution keys are not new owners.
+          for (const sessionKey of new Set([input.sessionKey, nonEmptyString(event.sessionKey)])) {
+            if (!sessionKey) {
+              continue;
+            }
+            const key = `${sessionKey}\0${input.toolCallId}`;
+            const previous = execToolStarts.get(key);
+            // Even within one run, a new source_id makes a reused provider call ID
+            // ambiguous for a deferred command. Only exact source replay is safe.
+            const sameOrigin =
+              previous?.runId === input.runId &&
+              previous.sourceSequence === input.sourceSequence &&
+              previous.occurredAt === input.occurredAt &&
+              previous.action === input.action;
+            rememberBounded(
+              execToolStarts,
+              key,
+              previous === undefined || sameOrigin ? input : null,
+            );
+          }
         }
         writer.record(input);
       }

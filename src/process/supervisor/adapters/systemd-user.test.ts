@@ -216,6 +216,25 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
     adapter.dispose();
   });
 
+  it("releases private observation on dispose without claiming command completion or cleanup", async () => {
+    const audit = vi.fn();
+    onAgentAuditEvent(audit);
+    const adapter = await createSystemdUserAdapter(input());
+    adapter.dispose();
+    expect(audit).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        runId: "run-1",
+        data: expect.objectContaining({ phase: "disposed", childPid: 1234 }),
+      }),
+    );
+    expect(audit.mock.calls.some(([event]) => event.data.phase === "completed")).toBe(false);
+    expect(audit.mock.calls.at(-1)?.[0].data).not.toHaveProperty("cleanupVerified");
+    expect(mocks.emitDiagnosticEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ phase: "started" }),
+    );
+    finish({ code: 0, signal: null });
+  });
+
   it.each(["max", "", "0"])(
     "refuses an aggregate slice without a finite memory budget (%s)",
     async (memory) => {

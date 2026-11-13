@@ -500,7 +500,8 @@ export function emitAgentAuditEvent(event: Omit<AgentEventPayload, "seq" | "ts">
     const phase = event.data.phase;
     const terminal =
       (event.stream === "lifecycle" && (phase === "end" || phase === "error")) ||
-      (event.stream === "exec.process.containment" && phase === "completed");
+      (event.stream === "exec.process.containment" &&
+        (phase === "completed" || phase === "disposed"));
     if (terminal && !state.runContextById.has(event.runId)) {
       // Private synthetic runs bypass public terminal cleanup. Release sequence state only
       // after synchronous audit listeners consume the terminal event and its final ordering.
