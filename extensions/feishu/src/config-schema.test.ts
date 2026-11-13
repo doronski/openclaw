@@ -13,6 +13,24 @@ function expectSchemaIssue(
 }
 
 describe("FeishuConfigSchema webhook validation", () => {
+  it("preserves HTTPS URL constraints in runtime and JSON Schema", () => {
+    for (const domain of ["feishu", "lark", "https://open.feishu.cn"]) {
+      expect(FeishuConfigSchema.safeParse({ domain }).success).toBe(true);
+    }
+    for (const domain of ["http://open.feishu.cn", "https://", "javascript:alert(1)"]) {
+      expectSchemaIssue(FeishuConfigSchema.safeParse({ domain }), "domain");
+    }
+
+    const schema = FeishuConfigSchema.toJSONSchema({
+      io: "input",
+      target: "draft-07",
+      unrepresentable: "any",
+    });
+    expect(schema.properties?.domain).toMatchObject({
+      anyOf: [{ enum: ["feishu", "lark"] }, { type: "string", format: "uri" }],
+    });
+  });
+
   it("applies top-level defaults", () => {
     const result = FeishuConfigSchema.parse({});
     expect(result.domain).toBe("feishu");
@@ -57,6 +75,8 @@ describe("FeishuConfigSchema webhook validation", () => {
   });
 
   it("rejects top-level webhook mode without encryptKey", () => {
+    // Deliberately invalid fixture; expectSchemaIssue below must reject the missing encryptKey.
+    // nosemgrep: security.opengrep.ghsa-g353-mgv3-8pcj.feishu-webhook-mode-missing-encrypt-key
     const result = FeishuConfigSchema.safeParse({
       connectionMode: "webhook",
       verificationToken: "token_top",
@@ -96,6 +116,8 @@ describe("FeishuConfigSchema webhook validation", () => {
   it("rejects account webhook mode without encryptKey", () => {
     const result = FeishuConfigSchema.safeParse({
       accounts: {
+        // Deliberately invalid fixture; expectSchemaIssue below must reject the missing encryptKey.
+        // nosemgrep: security.opengrep.ghsa-g353-mgv3-8pcj.feishu-webhook-mode-missing-encrypt-key
         main: {
           connectionMode: "webhook",
           verificationToken: "token_main",
