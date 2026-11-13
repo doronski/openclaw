@@ -323,6 +323,71 @@ export function createAgentEventAuditRecorder(options?: {
   const pendingTerminals = new Map<string, PendingTerminal>();
   const openRunInstances = new Set<string>();
   const settledRunInstances = new Set<string>();
+  const execToolStarts = new Map<string, AuditEventInput | null>();
+  const execOrigins = new Map<string, AuditEventInput>();
+
+  const rememberBounded = <T>(map: Map<string, T>, key: string, value: T) => {
+    map.set(key, value);
+    if (map.size > MAX_TRACKED_RUN_PROVENANCE) {
+      const oldest = map.keys().next().value;
+      if (oldest !== undefined) {
+        map.delete(oldest);
+      }
+    }
+  };
+  const recordExecProcess = (event: AgentEventPayload) => {
+    const phase = event.data.phase;
+    if (phase !== "started" && phase !== "completed") {
+      return;
+    }
+    const toolCallId = auditToolCallId(event.data.toolCallId);
+    const toolKey = `${event.sessionKey}\0${toolCallId}`;
+    const origin =
+      execOrigins.get(event.runId) ??
+      (phase === "started" ? execToolStarts.get(toolKey) : undefined);
+    if (!origin) {
+      return;
+    }
+    const unit = nonEmptyString(event.data.unit);
+    const expectedCgroup = nonEmptyString(event.data.expectedCgroup);
+    const cgroup = nonEmptyString(event.data.cgroup);
+    const startedAt = asDateTimestampMs(event.data.startedAtMs);
+    const endedAt = asDateTimestampMs(event.data.endedAtMs);
+    if (
+      !unit ||
+      !expectedCgroup ||
+      startedAt === undefined ||
+      (phase === "completed" && endedAt === undefined)
+    ) {
+      return;
+    }
+    const pid = event.data.childPid;
+    const input: AuditEventInput = {
+      ...origin,
+      execProcess: {
+        ...origin.execProcess,
+        runId: event.runId,
+        unit,
+        expectedCgroup,
+        ...(cgroup ? { cgroup } : {}),
+        ...(typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0 ? { pid } : {}),
+        startedAt,
+        ...(phase === "completed"
+          ? {
+              endedAt,
+              exitCode: typeof event.data.exitCode === "number" ? event.data.exitCode : null,
+              cleanupVerified: event.data.cleanupVerified === true,
+            }
+          : {}),
+      },
+    };
+    if (phase === "started") {
+      rememberBounded(execOrigins, event.runId, input);
+    } else {
+      execOrigins.delete(event.runId);
+    }
+    writer.record(input);
+  };
 
   const rememberSettled = (runInstance: string) => {
     settledRunInstances.delete(runInstance);
@@ -385,6 +450,12 @@ export function createAgentEventAuditRecorder(options?: {
 
   return {
     record: (event) => {
+      // Only the core adapter's private audit bus reaches this projection.
+      // Public/plugin diagnostic events cannot mint execution-to-tool bindings.
+      if (event.stream === "exec.process.containment") {
+        recordExecProcess(event);
+        return;
+      }
       const projection = projectAgentEvent(event);
       if (!projection) {
         return;
@@ -421,10 +492,26 @@ export function createAgentEventAuditRecorder(options?: {
     recordTool: (event) => {
       const input = projectToolExecutionEventToAudit(event);
       if (input) {
+        if (
+          event.type === "tool.execution.started" &&
+          input.toolName === "exec" &&
+          input.sessionKey &&
+          input.toolCallId
+        ) {
+          const key = `${input.sessionKey}\0${input.toolCallId}`;
+          // Reused provider call IDs across runs are ambiguous. Never let a later
+          // start relabel a deferred command from the earlier run.
+          const previous = execToolStarts.get(key);
+          const sameOrigin =
+            previous?.runId === input.runId && previous.sessionId === input.sessionId;
+          rememberBounded(execToolStarts, key, previous === undefined || sameOrigin ? input : null);
+        }
         writer.record(input);
       }
     },
     stop: async () => {
+      execToolStarts.clear();
+      execOrigins.clear();
       for (const runInstance of pendingTerminals.keys()) {
         flushPending(runInstance);
       }

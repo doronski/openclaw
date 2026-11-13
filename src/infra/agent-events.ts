@@ -497,8 +497,11 @@ export function emitAgentAuditEvent(event: Omit<AgentEventPayload, "seq" | "ts">
   const enriched = enrichAgentEvent(event);
   if (enriched) {
     notifyListeners(state.auditListeners, enriched);
-    const phase = event.stream === "lifecycle" ? event.data.phase : undefined;
-    if ((phase === "end" || phase === "error") && !state.runContextById.has(event.runId)) {
+    const phase = event.data.phase;
+    const terminal =
+      (event.stream === "lifecycle" && (phase === "end" || phase === "error")) ||
+      (event.stream === "exec.process.containment" && phase === "completed");
+    if (terminal && !state.runContextById.has(event.runId)) {
       // Private synthetic runs bypass public terminal cleanup. Release sequence state only
       // after synchronous audit listeners consume the terminal event and its final ordering.
       state.seqByRun.delete(event.runId);

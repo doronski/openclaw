@@ -2,6 +2,12 @@ import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { cleanupTempDirs, makeTempDir } from "../../test/helpers/temp-dir.js";
 import type { AgentEventPayload } from "../infra/agent-events.js";
 import {
+  emitAgentAuditEvent,
+  onAgentAuditEvent,
+  resetAgentEventsForTest,
+} from "../infra/agent-events.js";
+import {
+  emitDiagnosticEvent,
   emitTrustedDiagnosticEvent,
   onTrustedToolExecutionEvent,
   resetDiagnosticEventsForTest,
@@ -82,6 +88,7 @@ afterEach(() => {
   closeOpenClawStateDatabaseForTest();
   resetAgentEventAuditForTest();
   resetDiagnosticEventsForTest();
+  resetAgentEventsForTest();
 });
 
 afterAll(() => {
@@ -89,6 +96,170 @@ afterAll(() => {
 });
 
 describe("audit event persistence", () => {
+  it("joins a private OS PID/cgroup to its original tool row before and after abort with diagnostics off", async () => {
+    const database = createDatabaseOptions();
+    const recorder = createAgentEventAuditRecorder({
+      writer: {
+        ready: Promise.resolve(),
+        record: (input) => {
+          recordAuditEvent(input, database);
+          return true;
+        },
+        stop: async () => {},
+      },
+    });
+    onTrustedToolExecutionEvent(recorder.recordTool);
+    onAgentAuditEvent(recorder.record);
+    setDiagnosticsEnabledForProcess(false);
+    emitTrustedDiagnosticEvent(toolEvent());
+    const original = listAuditEvents({ database, limit: 10 }).events[0];
+    if (!original) {
+      throw new Error("Expected the original trusted tool start");
+    }
+    const data = {
+      phase: "started",
+      toolCallId: "call-1",
+      unit: "openclaw-exec-test.service",
+      expectedCgroup: "/user.slice/commands.slice/openclaw-exec-test.service",
+      cgroup: "/user.slice/commands.slice/openclaw-exec-test.service",
+      childPid: 4321,
+      startedAtMs: Date.now(),
+      command: "private-command",
+      env: { TOKEN: "private-credential" },
+    };
+    const event = {
+      runId: "process-1",
+      sessionKey: "agent:coder:main",
+      stream: "exec.process.containment",
+      data,
+    };
+    // Public diagnostics with identical claimed IDs never enter the private owner.
+    setDiagnosticsEnabledForProcess(true);
+    emitDiagnosticEvent({
+      type: "exec.process.containment",
+      runId: event.runId,
+      sessionId: event.sessionKey,
+      ...data,
+      phase: "started",
+      exitCode: null,
+    });
+    const { db } = openOpenClawStateDatabase(database);
+    expect(db.prepare("SELECT exec_pid FROM audit_events").get()?.exec_pid).toBeNull();
+    setDiagnosticsEnabledForProcess(false);
+    emitAgentAuditEvent({ ...event, data: { ...data, cgroup: undefined, childPid: undefined } });
+    expect(
+      db.prepare("SELECT exec_pid, exec_cgroup, exec_expected_cgroup FROM audit_events").get(),
+    ).toMatchObject({
+      exec_pid: null,
+      exec_cgroup: null,
+      exec_expected_cgroup: data.expectedCgroup,
+    });
+    emitAgentAuditEvent(event);
+    const started = db.prepare("SELECT * FROM audit_events WHERE exec_pid = ?").get(4321);
+    expect(started).toMatchObject({
+      run_id: original.runId,
+      session_key: original.sessionKey,
+      session_id: original.sessionId,
+      tool_call_id: original.toolCallId,
+      sequence: original.sequence,
+      exec_run_id: "process-1",
+      exec_unit: data.unit,
+      exec_expected_cgroup: data.expectedCgroup,
+      exec_cgroup: data.cgroup,
+      exec_started_at: data.startedAtMs,
+      exec_ended_at: null,
+    });
+    emitAgentAuditEvent({
+      ...event,
+      data: {
+        ...data,
+        phase: "completed",
+        endedAtMs: data.startedAtMs + 10,
+        exitCode: null,
+        cleanupVerified: true,
+      },
+    });
+    const finished = db
+      .prepare("SELECT * FROM audit_events WHERE exec_cgroup = ?")
+      .get(data.cgroup);
+    expect(finished).toMatchObject({
+      ...started,
+      exec_ended_at: data.startedAtMs + 10,
+      exec_cleanup_verified: 1,
+    });
+    const publicPage = listAuditEvents({ database, limit: 10 });
+    expect(publicPage.events).toEqual([original]);
+    expect(JSON.stringify(publicPage)).not.toMatch(/exec_|execProcess|4321|openclaw-exec-test/);
+    expect(JSON.stringify(finished)).not.toMatch(/private-command|private-credential|call-1/);
+    await recorder.stop();
+  });
+
+  it("leaves unknown or ambiguously reused tool identities unbound", async () => {
+    const database = createDatabaseOptions();
+    const recorder = createAgentEventAuditRecorder({
+      writer: {
+        ready: Promise.resolve(),
+        record: (input) => {
+          recordAuditEvent(input, database);
+          return true;
+        },
+        stop: async () => {},
+      },
+    });
+    recorder.recordTool(toolEvent());
+    recorder.recordTool(toolEvent({ runId: "another-run", sessionId: "another-session", seq: 2 }));
+    for (const toolCallId of ["call-1", "missing-call"]) {
+      recorder.record({
+        runId: "process-1",
+        seq: 1,
+        ts: Date.now(),
+        stream: "exec.process.containment",
+        sessionKey: "agent:coder:main",
+        data: {
+          phase: "started",
+          toolCallId,
+          unit: "openclaw-exec-test.service",
+          expectedCgroup: "/commands/test",
+          cgroup: "/commands/test",
+          childPid: 4321,
+          startedAtMs: Date.now(),
+        },
+      });
+    }
+    const { db } = openOpenClawStateDatabase(database);
+    expect(
+      db.prepare("SELECT count(*) AS n FROM audit_events WHERE exec_pid IS NOT NULL").get()?.n,
+    ).toBe(0);
+    expect(listAuditEvents({ database, limit: 10 }).events).toHaveLength(2);
+    await recorder.stop();
+  });
+
+  it("adds private execution columns to an existing ledger without changing its original records", () => {
+    const database = createDatabaseOptions();
+    recordAuditEvent(auditInput(), database);
+    const original = listAuditEvents({ database, limit: 10 });
+    const { db } = openOpenClawStateDatabase(database);
+    for (const column of [
+      "exec_run_id",
+      "exec_unit",
+      "exec_expected_cgroup",
+      "exec_cgroup",
+      "exec_pid",
+      "exec_started_at",
+      "exec_ended_at",
+      "exec_exit_code",
+      "exec_cleanup_verified",
+    ]) {
+      db.exec(`ALTER TABLE audit_events DROP COLUMN ${column}`);
+    }
+    closeOpenClawStateDatabaseForTest();
+    expect(listAuditEvents({ database, limit: 10 })).toEqual(original);
+    const reopened = openOpenClawStateDatabase(database);
+    expect(
+      reopened.db.prepare("SELECT exec_pid, exec_cgroup FROM audit_events").get(),
+    ).toMatchObject({ exec_pid: null, exec_cgroup: null });
+  });
+
   it("persists stable ordering, filters, and cursor pagination across reopen", () => {
     const database = createDatabaseOptions();
     const now = Date.now();

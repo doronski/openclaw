@@ -21,6 +21,9 @@ on:
       - src/cron/service.persists-delivered-status.test.ts
       - src/gateway/server-cron.test.ts
       - src/infra/diagnostic-events.ts
+      - src/infra/agent-events.ts
+      - src/audit/**
+      - src/state/openclaw-state-*
       - src/logging/diagnostic-stability*
       - extensions/diagnostics-otel/src/service*
       - src/process/supervisor/**
@@ -45,6 +48,9 @@ on:
       - src/cron/service.persists-delivered-status.test.ts
       - src/gateway/server-cron.test.ts
       - src/infra/diagnostic-events.ts
+      - src/infra/agent-events.ts
+      - src/audit/**
+      - src/state/openclaw-state-*
       - src/logging/diagnostic-stability*
       - extensions/diagnostics-otel/src/service*
       - src/process/supervisor/**
@@ -105,6 +111,9 @@ jobs:
         run: >-
           pnpm test
           src/process/supervisor/adapters/systemd-user.test.ts
+          src/audit/audit-events.test.ts
+          src/infra/agent-events.test.ts
+          src/state/openclaw-state-db.test.ts
           src/process/supervisor/supervisor.test.ts
           src/agents/bash-tools.exec-runtime.test.ts
           src/agents/bash-tools.exec-host-gateway.test.ts

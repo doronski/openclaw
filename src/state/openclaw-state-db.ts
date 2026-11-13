@@ -767,6 +767,19 @@ function backfillDeliveryQueueEntriesFromEntryJson(db: DatabaseSync): void {
 }
 
 function ensureAdditiveStateColumns(db: DatabaseSync): void {
+  for (const column of [
+    "exec_run_id TEXT",
+    "exec_unit TEXT",
+    "exec_expected_cgroup TEXT",
+    "exec_cgroup TEXT",
+    "exec_pid INTEGER",
+    "exec_started_at INTEGER",
+    "exec_ended_at INTEGER",
+    "exec_exit_code INTEGER",
+    "exec_cleanup_verified INTEGER",
+  ]) {
+    ensureColumn(db, "audit_events", column);
+  }
   ensureColumn(db, "node_pairing_pending", "client_id TEXT");
   ensureColumn(db, "node_pairing_pending", "client_mode TEXT");
   ensureColumn(db, "node_pairing_paired", "client_id TEXT");
