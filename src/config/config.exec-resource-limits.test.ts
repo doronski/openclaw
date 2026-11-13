@@ -34,14 +34,20 @@ describe("exec resourceLimits config", () => {
     { minAvailableBytes: 1, maxFullPressureAvg10: -1 },
     { minAvailableBytes: 1, maxFullPressureAvg10: 101 },
     { minAvailableBytes: 1, maxFullPressureAvg10: Infinity },
-    { minAvailableBytes: 1, maxFullPressureAvg10: NaN },
+    { minAvailableBytes: 1, maxFullPressureAvg10: Number.NaN },
     { minAvailableBytes: 1, maxFullPressureAvg10: 1, fallback: true },
   ])("rejects invalid host admission globally and per-agent: %j", (hostMemoryAdmission) => {
-    const resourceLimits = { backend: "systemd-user", slice: "commands.slice", hostMemoryAdmission };
+    const resourceLimits = {
+      backend: "systemd-user",
+      slice: "commands.slice",
+      hostMemoryAdmission,
+    };
     expect(validateConfigObject({ tools: { exec: { resourceLimits } } }).ok).toBe(false);
-    expect(validateConfigObject({
-      agents: { list: [{ id: "contained", tools: { exec: { resourceLimits } } }] },
-    }).ok).toBe(false);
+    expect(
+      validateConfigObject({
+        agents: { list: [{ id: "contained", tools: { exec: { resourceLimits } } }] },
+      }).ok,
+    ).toBe(false);
   });
 
   it.each([

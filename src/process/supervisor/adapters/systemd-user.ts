@@ -192,7 +192,9 @@ async function readHostMetric(file: string, deadline: number): Promise<string> {
   } finally {
     clearTimeout(timeout);
     if (!stream.closed) {
-      const closed = new Promise<void>((resolve) => stream.once("close", resolve));
+      const closed = new Promise<void>((resolve) => {
+        stream.once("close", resolve);
+      });
       stream.destroy();
       await closed;
     }

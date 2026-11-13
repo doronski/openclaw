@@ -552,7 +552,7 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
     { minAvailableBytes: 0, maxFullPressureAvg10: 1 },
     { minAvailableBytes: 0.5, maxFullPressureAvg10: 1 },
     { minAvailableBytes: Number.MAX_SAFE_INTEGER + 1, maxFullPressureAvg10: 1 },
-    { minAvailableBytes: 1, maxFullPressureAvg10: NaN },
+    { minAvailableBytes: 1, maxFullPressureAvg10: Number.NaN },
     { minAvailableBytes: 1, maxFullPressureAvg10: Infinity },
     { minAvailableBytes: 1, maxFullPressureAvg10: -1 },
     { minAvailableBytes: 1, maxFullPressureAvg10: 101 },
