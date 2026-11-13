@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  onAgentAuditEvent,
+  onAgentEvent,
+  resetAgentEventsForTest,
+} from "../../../infra/agent-events.js";
 import type { SpawnInput } from "../types.js";
 import { createSystemdUserAdapter } from "./systemd-user.js";
 
@@ -105,8 +110,55 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
     });
   });
   afterEach(() => {
+    resetAgentEventsForTest();
     killLauncher.mockReset();
     vi.unstubAllGlobals();
+  });
+
+  it("publishes actual start and aborted-cleanup identity only to the private audit owner", async () => {
+    const audit = vi.fn();
+    const publicAgentEvents = vi.fn();
+    onAgentAuditEvent(audit);
+    onAgentEvent(publicAgentEvents);
+    const adapter = await createSystemdUserAdapter(input());
+    expect(audit.mock.calls[0][0].data).toMatchObject({
+      phase: "started",
+      childPid: undefined,
+      cgroup: undefined,
+      expectedCgroup: expect.stringMatching(/^\/user.slice\/commands.slice\/openclaw-exec-/),
+    });
+    const started = audit.mock.calls.at(-1)![0];
+    expect(started).toMatchObject({
+      runId: "run-1",
+      sessionKey: "session-1",
+      stream: "exec.process.containment",
+      data: {
+        phase: "started",
+        toolCallId: "tool-1",
+        childPid: 1234,
+        unit: expect.stringMatching(/^openclaw-exec-.*\.service$/),
+        cgroup: expect.stringMatching(/^\/user.slice\/commands.slice\/openclaw-exec-/),
+      },
+    });
+    adapter.kill("SIGTERM");
+    finish({ code: null, signal: "SIGTERM" });
+    await adapter.wait();
+    expect(audit).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        runId: "run-1",
+        data: expect.objectContaining({
+          phase: "completed",
+          unit: started.data.unit,
+          cgroup: started.data.cgroup,
+          childPid: 1234,
+          cleanupVerified: true,
+          endedAtMs: expect.any(Number),
+        }),
+      }),
+    );
+    expect(publicAgentEvents).not.toHaveBeenCalled();
+    expect(JSON.stringify(audit.mock.calls)).not.toMatch(/private-value|printf|TOKEN/);
+    adapter.dispose();
   });
 
   it("puts the exact command and cwd in a bounded service without environment values in argv", async () => {
@@ -164,6 +216,34 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
     adapter.dispose();
   });
 
+  it("keeps private observation disposed when a pending wait finishes later", async () => {
+    const audit = vi.fn();
+    onAgentAuditEvent(audit);
+    const adapter = await createSystemdUserAdapter(input());
+    const pending = adapter.wait();
+    adapter.dispose();
+    expect(audit).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        runId: "run-1",
+        data: expect.objectContaining({ phase: "disposed", childPid: 1234 }),
+      }),
+    );
+    expect(audit.mock.calls.some(([event]) => event.data.phase === "completed")).toBe(false);
+    expect(audit.mock.calls.at(-1)?.[0].data).not.toHaveProperty("cleanupVerified");
+    expect(mocks.emitDiagnosticEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ phase: "started" }),
+    );
+    finish({ code: 0, signal: null });
+    await expect(pending).resolves.toMatchObject({ code: 0 });
+    expect(audit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ phase: "disposed" }) }),
+    );
+    expect(audit.mock.calls.some(([event]) => event.data.phase === "completed")).toBe(false);
+    expect(mocks.emitDiagnosticEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ phase: "completed", cleanupVerified: true }),
+    );
+  });
+
   it.each(["max", "", "0"])(
     "refuses an aggregate slice without a finite memory budget (%s)",
     async (memory) => {
@@ -196,6 +276,8 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
   });
 
   it("retains a positive polled service PID when terminal properties reset it to zero", async () => {
+    const audit = vi.fn();
+    onAgentAuditEvent(audit);
     servicePid = "0";
     const adapter = await createSystemdUserAdapter(input());
     servicePid = "1234";
@@ -206,6 +288,11 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
       });
       expect(serviceReads.length).toBeGreaterThan(1);
     });
+    expect(audit).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ phase: "started", childPid: 1234 }),
+      }),
+    );
     servicePid = "0";
     finish({ code: 0, signal: null });
     await adapter.wait();
@@ -216,6 +303,8 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
   });
 
   it("retains trusted --wait success when a short service unloads before observation", async () => {
+    const audit = vi.fn();
+    onAgentAuditEvent(audit);
     serviceObserved = false;
     stopSucceeds = false;
     finish({ code: 0, signal: null });
@@ -230,6 +319,16 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
     );
     expect(mocks.emitDiagnosticEvent).toHaveBeenLastCalledWith(
       expect.objectContaining({ childPid: undefined, cleanupVerified: true }),
+    );
+    expect(audit).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          phase: "completed",
+          childPid: undefined,
+          cgroup: undefined,
+          expectedCgroup: expect.stringMatching(/^\/user.slice\/commands.slice\/openclaw-exec-/),
+        }),
+      }),
     );
     adapter.dispose();
   });

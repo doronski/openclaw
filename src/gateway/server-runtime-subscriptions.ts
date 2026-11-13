@@ -66,7 +66,7 @@ export function startGatewayEventSubscriptions(params: {
     ? createAgentEventAuditRecorder()
     : undefined;
   const unsubscribePrivateAuditEvents = auditRecorder
-    ? onAgentAuditEvent(auditRecorder.record)
+    ? onAgentAuditEvent(auditRecorder.recordPrivate)
     : undefined;
   const unsubscribeToolAuditEvents = auditRecorder
     ? onTrustedToolExecutionEvent(auditRecorder.recordTool)

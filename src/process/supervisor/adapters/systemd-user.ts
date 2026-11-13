@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { ExecResourceLimitsConfig } from "../../../config/types.tools.js";
+import { emitAgentAuditEvent } from "../../../infra/agent-events.js";
 import { emitDiagnosticEvent } from "../../../infra/diagnostic-events.js";
 import type { SpawnInput, SpawnProcessAdapter } from "../types.js";
 import { createChildAdapter } from "./child.js";
@@ -240,6 +241,7 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
   let observedChildPid: number | undefined;
   let observedMemoryPeak: number | undefined;
   let finished = false;
+  let disposed = false;
   let stopPromise: Promise<void> | undefined;
   let controlFailure = false;
   const recordCgroup = (properties: Properties) => {
@@ -292,10 +294,38 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
     });
     return stopPromise;
   };
+  const audit = (
+    phase: "started" | "completed" | "disposed",
+    exitCode: number | null,
+    cleanupVerified?: boolean,
+  ) => {
+    if (disposed) {
+      return;
+    }
+    // Keep OS identity on the existing private audit path, independent of optional
+    // diagnostics. The audit owner joins it to the original trusted exec tool start.
+    emitAgentAuditEvent({
+      runId: input.runId,
+      sessionKey: input.sessionId,
+      stream: "exec.process.containment",
+      data: {
+        phase,
+        toolCallId: input.toolCallId,
+        unit,
+        expectedCgroup,
+        cgroup: observedCgroup,
+        childPid: observedChildPid,
+        startedAtMs,
+        ...(phase === "completed" ? { endedAtMs: Date.now(), cleanupVerified, exitCode } : {}),
+      },
+    });
+  };
   const observe = async () => {
     try {
       const properties = await show(unit);
       if (properties.LoadState !== "not-found") {
+        const previousPid = observedChildPid;
+        const previousCgroup = observedCgroup;
         lastProperties = properties;
         recordCgroup(properties);
         const pid = finiteNumber(properties.ExecMainPID);
@@ -305,6 +335,11 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
         const peak = finiteNumber(properties.MemoryPeak);
         if (peak !== undefined && (observedMemoryPeak === undefined || peak > observedMemoryPeak)) {
           observedMemoryPeak = peak;
+        }
+        if (!finished && (previousPid !== observedChildPid || previousCgroup !== observedCgroup)) {
+          // Startup has no observed PID yet. Enrich the same private binding as
+          // the existing monitor learns it; never substitute the launcher PID.
+          audit("started", null);
         }
       }
     } catch {
@@ -316,6 +351,7 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
     exitCode: number | null,
     cleanupVerified?: boolean,
   ) => {
+    audit(phase, exitCode, cleanupVerified);
     emitDiagnosticEvent({
       type: "exec.process.containment",
       phase,
@@ -427,6 +463,10 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
       });
     },
     dispose: () => {
+      if (!finished) {
+        audit("disposed", null);
+      }
+      disposed = true;
       finished = true;
       clearInterval(pollTimer);
       child.dispose();

@@ -107,6 +107,34 @@ export function recordAuditEvent(
   options: OpenClawStateDatabaseOptions = {},
 ): AuditEventRecord | undefined {
   return runOpenClawStateWriteTransaction(({ db }) => {
+    if (input.execProcess) {
+      const process = input.execProcess;
+      const sourceId = `${input.runId}:${input.sourceSequence}:${input.occurredAt}:${input.action}`;
+      // Enrichment targets the original trusted tool start, never a second tool action.
+      // One command cannot overwrite a different command's retained process identity.
+      executeSqliteQuerySync(
+        db,
+        getAuditKysely(db)
+          .updateTable("audit_events")
+          .set({
+            exec_run_id: process.runId,
+            exec_unit: process.unit,
+            exec_expected_cgroup: process.expectedCgroup,
+            exec_cgroup: process.cgroup ?? null,
+            exec_pid: process.pid ?? null,
+            exec_started_at: process.startedAt,
+            exec_ended_at: process.endedAt ?? null,
+            exec_exit_code: process.exitCode ?? null,
+            exec_cleanup_verified:
+              process.cleanupVerified === undefined ? null : Number(process.cleanupVerified),
+          })
+          .where("source_id", "=", sourceId)
+          .where((eb) =>
+            eb.or([eb("exec_run_id", "is", null), eb("exec_run_id", "=", process.runId)]),
+          ),
+      );
+      return undefined;
+    }
     const insert = executeSqliteQuerySync(
       db,
       getAuditKysely(db)

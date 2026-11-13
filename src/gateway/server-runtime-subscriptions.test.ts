@@ -1,6 +1,15 @@
 // Tests for gateway runtime subscription wiring.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { emitAgentEvent, resetAgentEventsForTest } from "../infra/agent-events.js";
+import type { AuditEventInput } from "../audit/audit-event-types.js";
+import {
+  emitAgentAuditEvent,
+  emitAgentEvent,
+  resetAgentEventsForTest,
+} from "../infra/agent-events.js";
+import {
+  emitTrustedDiagnosticEvent,
+  resetDiagnosticEventsForTest,
+} from "../infra/diagnostic-events.js";
 import type { SubsystemLogger } from "../logging/subsystem.js";
 import { emitSessionLifecycleEvent } from "../sessions/session-lifecycle-events.js";
 import {
@@ -36,6 +45,9 @@ const auditTestState = vi.hoisted(() => ({
   enabled: true,
   created: 0,
   stopped: 0,
+  recorder: undefined as
+    | ReturnType<typeof import("../audit/agent-event-audit.js").createAgentEventAuditRecorder>
+    | undefined,
 }));
 
 vi.mock("../audit/audit-config.js", () => ({
@@ -45,8 +57,12 @@ vi.mock("../audit/audit-config.js", () => ({
 vi.mock("../audit/agent-event-audit.js", () => ({
   createAgentEventAuditRecorder: () => {
     auditTestState.created += 1;
+    if (auditTestState.recorder) {
+      return auditTestState.recorder;
+    }
     return {
       record: vi.fn(),
+      recordPrivate: vi.fn(),
       recordTool: vi.fn(),
       stop: vi.fn(async () => {
         auditTestState.stopped += 1;
@@ -99,6 +115,7 @@ describe("startGatewayEventSubscriptions", () => {
     auditTestState.enabled = true;
     auditTestState.created = 0;
     auditTestState.stopped = 0;
+    auditTestState.recorder = undefined;
     installInMemoryTaskRegistryRuntime();
   });
 
@@ -109,6 +126,7 @@ describe("startGatewayEventSubscriptions", () => {
     unsubs?.lifecycleUnsub();
     void unsubs?.taskUnsub();
     resetAgentEventsForTest();
+    resetDiagnosticEventsForTest();
     resetTaskRegistryForTests({ persist: false });
   });
 
@@ -129,6 +147,105 @@ describe("startGatewayEventSubscriptions", () => {
     await unsubs.agentUnsub();
     expect(auditTestState.stopped).toBe(0);
   });
+
+  it.each(["agent:coder:canonical-session", "agent:coder:execution-key"])(
+    "ignores forged public containment and binds the genuine private execution for %s",
+    async (sessionKey) => {
+      const { createAgentEventAuditRecorder, resetAgentEventAuditForTest } = await vi.importActual<
+        typeof import("../audit/agent-event-audit.js")
+      >("../audit/agent-event-audit.js");
+      resetAgentEventAuditForTest();
+      const writes: AuditEventInput[] = [];
+      auditTestState.recorder = createAgentEventAuditRecorder({
+        writer: {
+          ready: Promise.resolve(),
+          record: (input) => {
+            writes.push(input);
+            return true;
+          },
+          stop: async () => {},
+        },
+      });
+      unsubs = startGatewayEventSubscriptions(createParams());
+      emitAgentAuditEvent({
+        runId: "original-run",
+        sessionKey: "agent:coder:canonical-session",
+        sessionId: "original-session",
+        stream: "lifecycle",
+        data: { phase: "start" },
+      });
+      emitTrustedDiagnosticEvent({
+        type: "tool.execution.started",
+        runId: "original-run",
+        sessionKey,
+        sessionId: "execution-session",
+        toolName: "exec",
+        toolCallId: "call-1",
+      });
+      const original = writes.find((input) => input.kind === "tool_action");
+      if (!original) {
+        throw new Error("Expected the original trusted tool start");
+      }
+      const genuine = {
+        runId: "real-process",
+        sessionKey,
+        stream: "exec.process.containment",
+        data: {
+          phase: "started",
+          toolCallId: "call-1",
+          unit: "openclaw-exec-real.service",
+          expectedCgroup: "/commands/openclaw-exec-real.service",
+          cgroup: "/commands/openclaw-exec-real.service",
+          childPid: 4321,
+          startedAtMs: Date.now(),
+        },
+      };
+      emitAgentEvent({
+        ...genuine,
+        runId: "forged-process",
+        data: { ...genuine.data, childPid: 9999 },
+      });
+      expect(writes.filter((input) => input.execProcess)).toEqual([]);
+      emitAgentAuditEvent(genuine);
+      expect(writes.filter((input) => input.execProcess)).toEqual([
+        {
+          ...original,
+          execProcess: {
+            runId: "real-process",
+            pid: 4321,
+            unit: genuine.data.unit,
+            expectedCgroup: genuine.data.expectedCgroup,
+            cgroup: genuine.data.cgroup,
+            startedAt: genuine.data.startedAtMs,
+          },
+        },
+      ]);
+      expect(original).toMatchObject({
+        runId: "original-run",
+        sessionKey: "agent:coder:canonical-session",
+        sessionId: "original-session",
+      });
+      const completed = {
+        ...genuine,
+        data: {
+          ...genuine.data,
+          phase: "completed",
+          endedAtMs: Date.now(),
+          cleanupVerified: true,
+          exitCode: 0,
+        },
+      };
+      emitAgentEvent({ ...completed, data: { ...completed.data, childPid: 9999 } });
+      expect(writes.filter((input) => input.execProcess)).toHaveLength(1);
+      emitAgentAuditEvent(completed);
+      expect(writes.findLast((input) => input.execProcess)).toMatchObject({
+        ...original,
+        execProcess: { runId: "real-process", pid: 4321, cleanupVerified: true },
+      });
+      // Join the existing mocked chat-dispatch failures before resetting its warnings.
+      await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(2));
+    },
+  );
 
   it("logs lazy agent event module failures", async () => {
     unsubs = startGatewayEventSubscriptions(createParams());
