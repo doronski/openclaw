@@ -75,6 +75,8 @@ describe("FeishuConfigSchema webhook validation", () => {
   });
 
   it("rejects top-level webhook mode without encryptKey", () => {
+    // Deliberately invalid fixture; expectSchemaIssue below must reject the missing encryptKey.
+    // nosemgrep: security.opengrep.ghsa-g353-mgv3-8pcj.feishu-webhook-mode-missing-encrypt-key
     const result = FeishuConfigSchema.safeParse({
       connectionMode: "webhook",
       verificationToken: "token_top",
@@ -114,6 +116,8 @@ describe("FeishuConfigSchema webhook validation", () => {
   it("rejects account webhook mode without encryptKey", () => {
     const result = FeishuConfigSchema.safeParse({
       accounts: {
+        // Deliberately invalid fixture; expectSchemaIssue below must reject the missing encryptKey.
+        // nosemgrep: security.opengrep.ghsa-g353-mgv3-8pcj.feishu-webhook-mode-missing-encrypt-key
         main: {
           connectionMode: "webhook",
           verificationToken: "token_main",
