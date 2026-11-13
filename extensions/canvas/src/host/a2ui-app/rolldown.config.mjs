@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../../../../..");
 const require = createRequire(import.meta.url);
+const rootRequire = createRequire(path.join(repoRoot, "package.json"));
 const uiRoot = path.resolve(repoRoot, "ui");
 const fromHere = (p) => path.resolve(here, p);
 const outputFile = process.env.OPENCLAW_A2UI_BUNDLE_OUT
@@ -47,6 +48,9 @@ export default {
   treeshake: false,
   resolve: {
     alias: {
+      // Canvas uses the v0.8 schemas, which support the patched root Zod runtime.
+      // Keep this exact-entry alias local to this browser build; vendor v0.9 stays unchanged.
+      zod$: rootRequire.resolve("zod"),
       "@a2ui/lit": a2uiLitIndex,
       "@a2ui/lit/ui": a2uiLitUi,
       "@openclaw/a2ui-theme-context": a2uiThemeContext,
