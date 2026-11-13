@@ -110,6 +110,11 @@ function listPackageManifests(root: string): string[] {
 
 function shouldSkipRuntimeFile(filePath: string): boolean {
   const normalized = toRepoPath(filePath);
+  // Canvas links these browser build inputs into its standalone shipped asset.
+  // Its server entrypoints serve that asset without importing its build dependencies.
+  if (normalized.startsWith("extensions/canvas/src/host/a2ui-app/")) {
+    return true;
+  }
   if (
     normalized.includes("/node_modules/") ||
     normalized.includes("/dist/") ||
@@ -268,6 +273,22 @@ describe("Discord dependency ownership", () => {
 });
 
 describe("extension runtime dependency manifests", () => {
+  it("keeps Canvas server imports scanned while separating its browser build inputs", () => {
+    const runtimeFiles = listRuntimeFiles("extensions/canvas");
+
+    expect(runtimeFiles).toEqual(
+      expect.arrayContaining([
+        "extensions/canvas/index.ts",
+        "extensions/canvas/src/host/a2ui.ts",
+        "extensions/canvas/src/host/server.ts",
+        "extensions/canvas/scripts/bundle-a2ui.mjs",
+      ]),
+    );
+    expect(runtimeFiles).not.toContain("extensions/canvas/src/host/a2ui-app/bootstrap.js");
+    expect(runtimeFiles).not.toContain("extensions/canvas/src/host/a2ui-app/rolldown.config.mjs");
+    expect(shouldSkipRuntimeFile("extensions/other/src/host/a2ui-app/bootstrap.js")).toBe(false);
+  });
+
   it("lists extension dependency inputs from git without walking extension dirs", () => {
     expectNoReaddirSyncDuring(() => {
       const manifests = listPackageManifests(EXTENSION_ROOT);
