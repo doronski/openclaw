@@ -500,7 +500,7 @@ export type DiagnosticSkillUsedEvent = DiagnosticBaseEvent & {
 
 export type DiagnosticExecProcessContainmentEvent = DiagnosticBaseEvent & {
   type: "exec.process.containment";
-  phase: "started" | "completed";
+  phase: "started" | "completed" | "refused";
   runId: string;
   sessionId: string;
   toolCallId?: string;
