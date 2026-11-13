@@ -241,6 +241,7 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
   let observedChildPid: number | undefined;
   let observedMemoryPeak: number | undefined;
   let finished = false;
+  let disposed = false;
   let stopPromise: Promise<void> | undefined;
   let controlFailure = false;
   const recordCgroup = (properties: Properties) => {
@@ -298,6 +299,9 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
     exitCode: number | null,
     cleanupVerified?: boolean,
   ) => {
+    if (disposed) {
+      return;
+    }
     // Keep OS identity on the existing private audit path, independent of optional
     // diagnostics. The audit owner joins it to the original trusted exec tool start.
     emitAgentAuditEvent({
@@ -462,6 +466,7 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
       if (!finished) {
         audit("disposed", null);
       }
+      disposed = true;
       finished = true;
       clearInterval(pollTimer);
       child.dispose();

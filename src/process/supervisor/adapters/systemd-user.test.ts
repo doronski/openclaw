@@ -216,10 +216,11 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
     adapter.dispose();
   });
 
-  it("releases private observation on dispose without claiming command completion or cleanup", async () => {
+  it("keeps private observation disposed when a pending wait finishes later", async () => {
     const audit = vi.fn();
     onAgentAuditEvent(audit);
     const adapter = await createSystemdUserAdapter(input());
+    const pending = adapter.wait();
     adapter.dispose();
     expect(audit).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -233,6 +234,14 @@ describe.skipIf(process.platform !== "linux")("systemd user command containment"
       expect.objectContaining({ phase: "started" }),
     );
     finish({ code: 0, signal: null });
+    await expect(pending).resolves.toMatchObject({ code: 0 });
+    expect(audit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ phase: "disposed" }) }),
+    );
+    expect(audit.mock.calls.some(([event]) => event.data.phase === "completed")).toBe(false);
+    expect(mocks.emitDiagnosticEvent).toHaveBeenLastCalledWith(
+      expect.objectContaining({ phase: "completed", cleanupVerified: true }),
+    );
   });
 
   it.each(["max", "", "0"])(
