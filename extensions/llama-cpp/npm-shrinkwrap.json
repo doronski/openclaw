@@ -679,21 +679,6 @@
         "node": "^20.17.0 || >=22.9.0"
       }
     },
-    "node_modules/cmake-js/node_modules/fs-extra": {
-      "version": "11.3.6",
-      "resolved": "https://registry.npmjs.org/fs-extra/-/fs-extra-11.3.6.tgz",
-      "integrity": "sha512-w8ZNZr2mKIc7qeNaQ9AVPT1+iFaI+Avd4xudVOvdDJ8VytREi1Ft5Ih7hd9jjehod8vAM5GMsfQ/TpPf4EyoEA==",
-      "license": "MIT",
-      "optional": true,
-      "dependencies": {
-        "graceful-fs": "^4.2.0",
-        "jsonfile": "^6.0.1",
-        "universalify": "^2.0.0"
-      },
-      "engines": {
-        "node": ">=14.14"
-      }
-    },
     "node_modules/color-convert": {
       "version": "2.0.1",
       "resolved": "https://registry.npmjs.org/color-convert/-/color-convert-2.0.1.tgz",
@@ -954,21 +939,6 @@
       },
       "optionalDependencies": {
         "@reflink/reflink": "^0.1.16"
-      }
-    },
-    "node_modules/ipull/node_modules/fs-extra": {
-      "version": "11.3.6",
-      "resolved": "https://registry.npmjs.org/fs-extra/-/fs-extra-11.3.6.tgz",
-      "integrity": "sha512-w8ZNZr2mKIc7qeNaQ9AVPT1+iFaI+Avd4xudVOvdDJ8VytREi1Ft5Ih7hd9jjehod8vAM5GMsfQ/TpPf4EyoEA==",
-      "license": "MIT",
-      "optional": true,
-      "dependencies": {
-        "graceful-fs": "^4.2.0",
-        "jsonfile": "^6.0.1",
-        "universalify": "^2.0.0"
-      },
-      "engines": {
-        "node": ">=14.14"
       }
     },
     "node_modules/ipull/node_modules/lifecycle-utils": {
