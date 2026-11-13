@@ -260,20 +260,23 @@ const filePage = () =>
 
 describe("combined security review entry point", () => {
   it.each([
-    { role: "maintain", decision: "success" },
-    { role: "write", decision: "failure" },
-  ])("enforces both guards without a rollout lookup for $role authors", ({ role, decision }) => {
-    const result = evaluate(
-      { [rolePath]: { role_name: role } },
-      "enforce",
-      undefined,
-      undefined,
-      false,
-    );
-    expectReview(result, ["pending", decision]);
-    expect(result.reviews.filter((entry) => entry.body?.state === decision)).toHaveLength(2);
-    expect(requestsFor(result, "GET /repos/openclaw/openclaw/pulls/152415")).toEqual([]);
-  });
+    { role: "maintain", decision: "success", reviewState: "success" },
+    { role: "write", decision: "failure", reviewState: "pending" },
+  ])(
+    "enforces both guards without a rollout lookup for $role authors",
+    ({ role, decision, reviewState }) => {
+      const result = evaluate(
+        { [rolePath]: { role_name: role } },
+        "enforce",
+        undefined,
+        undefined,
+        false,
+      );
+      expectReview(result, ["pending", decision]);
+      expect(result.reviews.filter((entry) => entry.body?.state === reviewState)).toHaveLength(2);
+      expect(requestsFor(result, "GET /repos/openclaw/openclaw/pulls/152415")).toEqual([]);
+    },
+  );
 
   it("finishes ordinary preparation with the same decisions and fewer requests than separate detection", () => {
     const detection = evaluate({}, "detect");
