@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { parse, stringify } from "yaml";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -93,8 +94,35 @@ function evaluate(
   mode = "enforce",
   deadline?: number,
   completedCi?: { id: number; attempt: number },
+  withRollout = true,
 ) {
   const root = tempDirs.make("security-review-");
+  // Match the workflow's runtime closure, with rollout policy owned by each
+  // fixture rather than whichever rollout window this checkout configures.
+  for (const filename of [
+    "scripts/github/dependency-guard.mjs",
+    "scripts/github/guard-review.mjs",
+    "scripts/github/guard-shared.mjs",
+    "scripts/github/security-review-policy.mjs",
+    "scripts/github/security-review-rollout.mjs",
+    "scripts/github/security-review.mjs",
+    "scripts/github/security-sensitive-guard.mjs",
+    "scripts/lib/bounded-response.mjs",
+  ]) {
+    const target = path.join(root, filename);
+    mkdirSync(path.dirname(target), { recursive: true });
+    copyFileSync(path.resolve(filename), target);
+  }
+  const policyPath = ".github/security-review-policy.yml";
+  mkdirSync(path.join(root, ".github"));
+  writeFileSync(
+    path.join(root, policyPath),
+    stringify({
+      ...parse(readFileSync(path.resolve(policyPath), "utf8")),
+      rollout: withRollout ? { "pull-request": rollout.number } : undefined,
+    }),
+  );
+  symlinkSync(path.resolve("node_modules"), path.join(root, "node_modules"), "junction");
   const logPath = path.join(root, "requests.jsonl");
   const fixturePath = path.join(root, "fixture.json");
   const eventPath = path.join(root, "event.json");
@@ -133,7 +161,7 @@ function evaluate(
     [
       "--import",
       path.resolve("test/fixtures/github-guard-fetch.mjs"),
-      path.resolve("scripts/github/security-review.mjs"),
+      path.join(root, "scripts/github/security-review.mjs"),
     ],
     {
       encoding: "utf8",
@@ -231,6 +259,25 @@ const filePage = () =>
   }));
 
 describe("combined security review entry point", () => {
+  it.each([
+    { role: "maintain", decision: "success", reviewState: "success" },
+    { role: "write", decision: "failure", reviewState: "pending" },
+  ])(
+    "enforces both guards without a rollout lookup for $role authors",
+    ({ role, decision, reviewState }) => {
+      const result = evaluate(
+        { [rolePath]: { role_name: role } },
+        "enforce",
+        undefined,
+        undefined,
+        false,
+      );
+      expectReview(result, ["pending", decision]);
+      expect(result.reviews.filter((entry) => entry.body?.state === reviewState)).toHaveLength(2);
+      expect(requestsFor(result, "GET /repos/openclaw/openclaw/pulls/152415")).toEqual([]);
+    },
+  );
+
   it("finishes ordinary preparation with the same decisions and fewer requests than separate detection", () => {
     const detection = evaluate({}, "detect");
     const enforcement = evaluate();
