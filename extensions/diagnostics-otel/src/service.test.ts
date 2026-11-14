@@ -63,6 +63,7 @@ const traceExporterCtor = vi.hoisted(() => vi.fn());
 const metricExporterCtor = vi.hoisted(() => vi.fn());
 const logExporterCtor = vi.hoisted(() => vi.fn());
 const spanProcessorCtor = vi.hoisted(() => vi.fn());
+const logProcessorCtor = vi.hoisted(() => vi.fn());
 const nodeProxyAgent = vi.hoisted(() => ({ kind: "node-proxy-agent" }));
 const createNodeProxyAgentMock = vi.hoisted(() => vi.fn());
 const unhandledRejectionHandlerState = vi.hoisted(() => {
@@ -138,7 +139,9 @@ vi.mock("openclaw/plugin-sdk/fetch-runtime", () => ({
 }));
 
 vi.mock("@opentelemetry/sdk-logs", () => ({
-  BatchLogRecordProcessor: function BatchLogRecordProcessor() {},
+  BatchLogRecordProcessor: function BatchLogRecordProcessor(options?: unknown) {
+    logProcessorCtor(options);
+  },
   LoggerProvider: class {
     getLogger = vi.fn(() => ({
       emit: logEmit,
@@ -579,6 +582,7 @@ describe("diagnostics-otel service", () => {
     metricExporterCtor.mockClear();
     logExporterCtor.mockClear();
     spanProcessorCtor.mockClear();
+    logProcessorCtor.mockClear();
     createNodeProxyAgentMock.mockReset();
     createNodeProxyAgentMock.mockReturnValue(undefined);
     unhandledRejectionHandlerState.reset();
@@ -1724,15 +1728,19 @@ describe("diagnostics-otel service", () => {
     await service.stop?.(ctx);
   });
 
-  test("applies flush interval to trace batching", async () => {
+  test("applies flush interval to trace and log batching", async () => {
     const service = createDiagnosticsOtelService();
-    const ctx = createTraceOnlyContext(OTEL_TEST_ENDPOINT);
+    const ctx = createOtelContext(OTEL_TEST_ENDPOINT, { traces: true, logs: true });
     ctx.config.diagnostics!.otel!.flushIntervalMs = 250;
 
     await service.start(ctx);
 
     expect(spanProcessorCtor).toHaveBeenCalledTimes(1);
     expect(firstSpanProcessorOptions().scheduledDelayMillis).toBe(1000);
+    expect(logProcessorCtor).toHaveBeenCalledExactlyOnceWith({
+      exporter: expect.any(Object),
+      scheduledDelayMillis: 1000,
+    });
     await service.stop?.(ctx);
   });
 
