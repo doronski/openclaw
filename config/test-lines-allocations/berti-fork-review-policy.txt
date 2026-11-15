@@ -1,0 +1,2 @@
+# Bind legacy rollout cases to explicit policy and cover old-PR enforcement in this fork.
+31
