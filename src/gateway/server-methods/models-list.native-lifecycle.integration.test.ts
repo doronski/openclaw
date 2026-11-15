@@ -57,6 +57,7 @@ it.for([false, true])(
     const nativeRequests = (from = 0) =>
       requests.slice(from).filter((path) => path === "/native/models");
     const nativeModelId = "native-account-only";
+    let nativeName = "Native account model";
     let outsideName = "Unrelated native model";
     let addOutsideModel = false;
     let failedProviderCatalog = true;
@@ -71,7 +72,7 @@ it.for([false, true])(
       nativeRuntime: harness,
     });
     const nativeRows = () => [
-      nativeRow(nativeModelId, "Native account model"),
+      nativeRow(nativeModelId, nativeName),
       nativeRow("configured-native", "Configured native model"),
       { provider, id: "harness-host-row", name: "Harness host model" },
       ...(withProviderCredentials
@@ -286,20 +287,24 @@ it.for([false, true])(
             status: "unavailable",
           });
           expect(requests.toSorted()).toEqual(["/native/models", "/provider/models"]);
-          // Gateway refresh can return a pending snapshot before discovery publishes.
-          const refresh = () =>
-            waitForCatalogPublication({
+          // Provider publication can clear pending before the native renewal starts.
+          const refresh = (name: string) => {
+            nativeName = name;
+            return waitForCatalogPublication({
               signal,
               start: () => request({ view: "all", refresh: true }),
               read: list,
-              ready: (result) => !result.pendingProviders?.includes(provider),
+              ready: (result) =>
+                !result.pendingProviders?.includes(provider) &&
+                result.models.some((row) => row.id === nativeModelId && row.name === name),
             });
-          const unavailable = await refresh();
+          };
+          const unavailable = await refresh("Native model after unavailable provider refresh");
           expect(unavailable.refreshFailed).toBe(true);
           expect.soft(unavailable.models).toContainEqual(model("unconfigured-starter"));
           expect(unavailable.models).toContainEqual(model(nativeModelId));
           failedProviderCatalog = false;
-          await refresh();
+          await refresh("Native model after recovered provider refresh");
           expect((await list()).models).toContainEqual(model("provider-account"));
           const beforeOpaqueReload = requests.length;
           nativeReleased = createDeferred();
