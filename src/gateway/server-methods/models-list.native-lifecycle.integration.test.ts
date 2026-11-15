@@ -186,7 +186,8 @@ it.for([false, true])(
         agents: catalogAgents(state, {
           model: `${provider}/static-model`,
           modelPolicy: { allow: [`${provider}/*`] },
-          models: { [`${provider}/static-model`]: { agentRuntime: { id: harness } } },
+          // Keep native inventory picker-only; a native default also prewarms after startup.
+          models: { [`${provider}/static-model`]: { pickerRuntimes: [harness] } },
         }),
         models: {
           providers: {
