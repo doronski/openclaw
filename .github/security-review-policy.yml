@@ -5,8 +5,7 @@
 # apply only to product categories, never to dependency files. For overlapping
 # categories, the first matching category supplies the review guidance.
 
-rollout:
-  pull-request: 152415
+# No rollout window: enforce security review on every pull request in this fork.
 
 exclude:
   test-directories:

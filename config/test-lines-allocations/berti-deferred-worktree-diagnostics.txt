@@ -1,0 +1,2 @@
+# Bound existing failure diagnostics to status and booleans without exposing error text.
+8

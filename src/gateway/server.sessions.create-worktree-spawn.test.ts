@@ -2,7 +2,8 @@ import { execFile } from "node:child_process";
 import "../agents/subagents/spawn/subagent-spawn-model.mocks.shared.js";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
+import { isDeepStrictEqual, promisify } from "node:util";
+import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterAll, afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
 import { ErrorCodes, errorShape } from "../../packages/gateway-protocol/src/index.js";
@@ -22,7 +23,7 @@ import {
 } from "../config/sessions/session-accessor.js";
 import * as sessionAccess from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
-import { onAgentEvent } from "../infra/agent-events.js";
+import { getAgentEventLifecycleGeneration, onAgentEvent } from "../infra/agent-events.js";
 import { withTimeout } from "../infra/fs-safe.js";
 import { withPluginRuntimeGatewayContextResolver } from "../plugins/runtime/gateway-request-scope.js";
 import { withProjectCheckoutLifecycle } from "../projects/project-checkout.js";
@@ -32,6 +33,12 @@ import {
   isSessionMutationActive,
   SESSION_CONTROLLER_DRAIN_TIMEOUT_MS,
 } from "../sessions/session-controller.lifecycle.js";
+import {
+  getRpcSourceIdentity,
+  getRpcSourceLifecycleGeneration,
+  getRpcSourceProjectSessionActive,
+  isRpcSourceRegistered,
+} from "../sessions/session-controller.rpc-sources.js";
 import { rpcSourceTesting } from "../sessions/session-lifecycle-admission.test-support.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import * as leaseAcquisition from "../state/openclaw-state-lease-acquisition.js";
@@ -41,6 +48,9 @@ import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-cha
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { createGatewayInstanceRuntime } from "./server-instance-runtime.js";
 import { createRequestGatewayMethodRegistry } from "./server-methods.js";
+import { hasActiveAgentRuntimeAuthority } from "./server-methods/agent-runtime-authority.js";
+import * as chatDispatch from "./server-methods/chat-send-agent-dispatch.js";
+import * as sessionProject from "./server-methods/session-create-project.js";
 import { disposeSessionReadContexts } from "./server-methods/sessions-read-cache.test-support.js";
 import { createWorktreeSpawnRepositoryFixture } from "./server.sessions.create-worktree-spawn.test-support.js";
 import {
@@ -250,14 +260,17 @@ test.each([
   ["registered", false],
   ["github", false],
 ] as const)(
-  "required visible spawn selects %s project (managed worktree: %s)",
+  "required visible spawn selects %s project (explicit worktree: %s)",
   async (source, worktree) => {
     const { entry: parent } = await createManagedProjectParent(true);
+    // Repository URLs always select a private checkout, including omitted worktree intent.
+    const managedWorktree = worktree || source === "github";
     const projectName = worktree ? "tool-selected-project" : "sandbox-external-project";
     const otherRepository = await createRepository(state.root, projectName);
     const project = await registerProjectRegistry({ path: otherRepository });
     projectCloneMocks.materializeProjectClone.mockResolvedValue(project);
     const { context, registerRun, spawn } = await createVisibleSpawnTool();
+    const dispatch = vi.spyOn(chatDispatch, "startChatDispatch");
     const createWorktree = vi.spyOn(ManagedWorktreeService.prototype, "createWithOutcome");
     const bindChild = vi.spyOn(sessionAccess, "createSessionEntryWithTranscript");
     mockDispatch();
@@ -265,8 +278,8 @@ test.each([
     let creationError: unknown;
     try {
       const result = await spawn({
-        // Sandbox rejection must not await unrelated automatic title generation.
-        label: worktree ? "Selected project child" : "Rejected project child",
+        // Workspace boundary proof must not await unrelated automatic title generation.
+        label: managedWorktree ? "Selected project child" : "Rejected project child",
         ...(source === "registered"
           ? { projectId: project.id }
           : source === "github"
@@ -292,30 +305,25 @@ test.each([
       }
       if (childKey) {
         await settleWorkspaceRuns(context, storePath, childKey);
+        expect(dispatch).toHaveBeenCalledOnce();
+        await dispatch.mock.results[0]!.value;
       }
       const child = childKey ? readEntry(childKey) : undefined;
-      if (!worktree) {
-        if (source === "registered") {
-          expect(creationError).toMatchObject({
-            message: expect.stringContaining("outside the sandboxed agent workspace"),
-          });
-          expect(childKey).toBeUndefined();
-          expect(bindChild).not.toHaveBeenCalled();
-          expect(registerRun).not.toHaveBeenCalled();
-        } else {
-          expect(creationError).toBeUndefined();
-          expect(child).toMatchObject({ sandbox: "required", status: "failed" });
-          expect(child?.lastRunError).toContain("outside the sandboxed agent workspace");
-        }
+      if (!managedWorktree) {
+        expect(creationError).toMatchObject({
+          message: expect.stringContaining("outside the sandboxed agent workspace"),
+        });
+        expect(childKey).toBeUndefined();
+        expect(bindChild).not.toHaveBeenCalled();
+        expect(registerRun).not.toHaveBeenCalled();
         expect(createWorktree).not.toHaveBeenCalled();
-        if (childKey) {
-          expect(await managedWorktrees.findLiveByOwner("session", childKey)).toBeUndefined();
-        }
+        expect(dispatch).not.toHaveBeenCalled();
         expect(child?.worktree).toBeUndefined();
         expect(child?.projectId).toBeUndefined();
         expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
         return;
       }
+      expect(creationError).toBeUndefined();
       expect(result?.details, JSON.stringify(result?.details)).toMatchObject({
         status: "accepted",
       });
@@ -325,12 +333,20 @@ test.each([
         expect(child?.projectId).toBe(project.id);
       }
       expect(child?.worktree?.repoRoot).toBe(source === "inherited" ? repository : otherRepository);
+      const owned = (await managedWorktrees.findLiveByOwner("session", childKey!))!;
+      expect(owned.id).toBe(child!.worktree!.id);
+      expect(child).toMatchObject({ spawnedCwd: owned.path, sessionRoot: owned.path });
+      expect(owned.path).not.toBe(owned.repoRoot);
+      expect(child?.pendingWorktree).toBeUndefined();
+      expect(child?.pendingProjectGitUrl).toBeUndefined();
       expect(await readReadme(child!.spawnedCwd!)).toBe(
         source === "inherited" ? "selected-project\n" : `${projectName}\n`,
       );
       if (source === "github") {
         expect(projectCloneMocks.materializeProjectClone).toHaveBeenCalledWith(
-          expect.objectContaining({ gitUrl: "https://github.com/example/selected.git" }),
+          expect.objectContaining({
+            gitUrl: `https://github.com/example/${worktree ? "selected" : "restricted"}.git`,
+          }),
           expect.objectContaining({ signal: expect.any(AbortSignal) }),
         );
       } else {
@@ -341,6 +357,7 @@ test.each([
     } finally {
       if (childKey) {
         await settleWorkspaceRuns(context, storePath, childKey, true);
+        await Promise.all(dispatch.mock.results.map(({ value }) => value));
       }
       dispatchInboundMessageMock.mockReset();
     }
@@ -952,8 +969,74 @@ test.each(["archive", "stale-child"] as const)(
       expect(readEntry(parentKey)?.archivedAt).toBeDefined();
     }
     mockDispatch();
+    const dispatch = vi.spyOn(chatDispatch, "startChatDispatch");
     const resolveRepository = vi.spyOn(repositoryPaths, "resolveRepositoryPaths");
     const createWorktree = vi.spyOn(ManagedWorktreeService.prototype, "createWithOutcome");
+    let preparationDiagnostic: Record<string, string | boolean> | undefined;
+    const prepareWorkspace = sessionProject.prepareSessionWorkspace;
+    vi.spyOn(sessionProject, "prepareSessionWorkspace").mockImplementation((params) => {
+      const signal = params.admission.activeRunAbort.entry.input.abortSignal;
+      const preparation = prepareWorkspace(params);
+      void preparation.waitUntilReady().catch((error: unknown) => {
+        // Capture after preparation rejects and before dispatch cleanup. Cancellation
+        // may already be recorded; the first guard frame identifies the refusal.
+        try {
+          const source = params.admission.activeRunAbort.entry;
+          const identity = getRpcSourceIdentity(source);
+          const current = readEntry(key);
+          const ownershipError = collectNestedErrorCandidates(error).find(
+            (candidate): candidate is Error =>
+              candidate instanceof Error &&
+              candidate.message ===
+                "Session changed while preparing its project; retry the task.",
+          );
+          const stack = ownershipError?.stack ?? "";
+          const guard = stack.match(/\b(assertRunOwnership|assertSavedWorkspaceIntent)\b/u)?.[1];
+          preparationDiagnostic = {
+            errorCode: ownershipError
+              ? "SESSION_PROJECT_OWNERSHIP_ERROR"
+              : "OTHER_PREPARATION_ERROR",
+            guardLocation:
+              guard === "assertRunOwnership"
+                ? "run-authority"
+                : guard === "assertSavedWorkspaceIntent"
+                  ? "saved-intent"
+                  : "unclassified",
+            registered: isRpcSourceRegistered(source),
+            signalAborted: source.input.abortSignal.aborted,
+            signalMatches: source.input.abortSignal === signal,
+            runSessionKeyMatches: identity.sessionKey === key,
+            runSessionIdMatches: identity.sessionId === acceptedChild.sessionId,
+            admittedSessionIdMatches:
+              params.admission.admittedSessionId === acceptedChild.sessionId,
+            runGenerationMatches:
+              getRpcSourceLifecycleGeneration(source) === params.admission.lifecycleGeneration,
+            processGenerationMatches:
+              getAgentEventLifecycleGeneration() === params.admission.lifecycleGeneration,
+            projectSessionInactive: getRpcSourceProjectSessionActive(source) === false,
+            terminalPending: source.adapter.projectSessionTerminalPending === true,
+            terminalPersisted: source.adapter.projectSessionTerminalPersisted === true,
+            runtimeAuthorityActive: hasActiveAgentRuntimeAuthority(params.client, params.context),
+            entrySessionIdMatches: params.session.entry?.sessionId === acceptedChild.sessionId,
+            entryLifecycleMatches:
+              params.session.entry?.lifecycleRevision === acceptedChild.lifecycleRevision,
+            currentSessionIdMatches: current?.sessionId === acceptedChild.sessionId,
+            currentLifecycleMatches:
+              current?.lifecycleRevision === acceptedChild.lifecycleRevision,
+            currentProjectMatches: current?.projectId === acceptedChild.projectId,
+            currentPendingProjectMatches:
+              current?.pendingProjectGitUrl === acceptedChild.pendingProjectGitUrl,
+            currentPendingWorktreeMatches: isDeepStrictEqual(
+              current?.pendingWorktree,
+              acceptedChild.pendingWorktree,
+            ),
+          };
+        } catch {
+          preparationDiagnostic = { errorCode: "DIAGNOSTIC_UNAVAILABLE" };
+        }
+      });
+      return preparation;
+    });
     let replaced = false;
     const unsubscribe = onAgentEvent((event) => {
       if (
@@ -982,6 +1065,9 @@ test.each(["archive", "stale-child"] as const)(
           operator,
         ),
       );
+      expect(dispatch).toHaveBeenCalledOnce();
+      // Prompt publication retains pending intent until the complete checkout settles.
+      await dispatch.mock.results[0]!.value;
       await settleWorkspaceRuns(context, storePath, key);
       const child = readEntry(key)!;
       if (change === "stale-child") {
@@ -997,7 +1083,16 @@ test.each(["archive", "stale-child"] as const)(
           parentSessionId: parent.sessionId,
           worktree: { repoRoot: repository },
         });
-        expect(child.pendingWorktree).toBeUndefined();
+        expect(
+          child.pendingWorktree,
+          JSON.stringify({
+            status: child.status ?? "unset",
+            hasRunError: Boolean(child.lastRunError),
+            workspaceOwnerChanged:
+              child.lastRunError?.includes("Session changed while preparing its project") ?? false,
+            preparation: preparationDiagnostic,
+          }),
+        ).toBeUndefined();
         const owned = (await managedWorktrees.findLiveByOwner("session", key))!;
         expect(owned.id).toBe(child.worktree?.id);
         expect(await readReadme(owned.path)).toBe("selected-project\n");
@@ -1007,6 +1102,7 @@ test.each(["archive", "stale-child"] as const)(
     } finally {
       unsubscribe();
       await settleWorkspaceRuns(context, storePath, key, true);
+      await Promise.all(dispatch.mock.results.map(({ value }) => value));
       dispatchInboundMessageMock.mockReset();
     }
   },

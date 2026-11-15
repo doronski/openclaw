@@ -1,0 +1,2 @@
+# Wait for the native renewal publication before the opaque auth reload assertions.
+5

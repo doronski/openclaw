@@ -1,5 +1,11 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { revalidatePublishedSecurityClearance } from "../../scripts/github/guard-review.mjs";
+
+// Exercise rollout admission independently of the checkout's deployment policy.
+vi.mock("../../scripts/github/security-review-policy.mjs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../scripts/github/security-review-policy.mjs")>()),
+  loadSecurityReviewPolicy: () => ({ rolloutPullRequest: 152415 }),
+}));
 
 const head = "a".repeat(40);
 const rolloutCommit = "b".repeat(40);

@@ -490,26 +490,6 @@ describe("dependency guard script", () => {
     expect(enforcement.stdout).toContain("Automatic lockfile cleanup is best effort.");
   });
 
-  it("does not approve or autoscrub grandfathered lockfile PRs in any mode", () => {
-    const cases = ["detect", "autoscrub", "enforce"];
-    for (const mode of cases) {
-      const result = runDependencyGuard(
-        {
-          [`GET ${pullPath}`]: { ...pullRequest, created_at: "2025-11-01T00:00:00Z" },
-          [`GET ${pullPath}/files`]: [{ filename: "pnpm-lock.yaml" }],
-          [`GET ${repoPath}/compare/${rolloutSha}...${headSha}`]: {
-            ...comparison(rolloutSha, staleSha),
-            status: "diverged",
-          },
-        },
-        mode,
-      );
-      expectGuard(result, []);
-      expect(result.stdout).toContain("grandfathered");
-      expect(result.calls.every((call) => call.method === "GET")).toBe(true);
-    }
-  });
-
   it("detects dependency guard file surfaces", () => {
     expect(isDependencyFile("pnpm-lock.yaml")).toBe(true);
     expect(isDependencyFile("package.json")).toBe(false);

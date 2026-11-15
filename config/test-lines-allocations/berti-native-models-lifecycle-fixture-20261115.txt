@@ -1,0 +1,2 @@
+# One rationale line keeps the native lifecycle fixture on picker-driven discovery.
+1

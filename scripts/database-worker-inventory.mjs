@@ -1614,10 +1614,20 @@ const reviewedOperations = new Map([
           "ensureSqliteTranscriptGenerationsForCanonicalRepair",
           "rehomeSqliteSessionDeliveryReferencesForCanonicalRepairBatch",
           "copySqliteSessionOwnedStateForRepair",
-          "readExactSessionEntryRowForCanonicalRepair",
         ],
         evidence:
-          "Doctor canonical-key repair/import and worker-only legacy comparison in session-retirement-read.worker.ts; native full claims run only after detect returns, and allowCanonicalRepair is supplied only by Doctor canonical-key repair",
+          "Doctor-only canonical-key repair and legacy-main/store-relocation copies; runtime comparison imports the separate canonical-repair-read.ts probe without these repair effects.",
+      },
+    ],
+  ],
+  [
+    "src/config/sessions/session-accessor.sqlite-canonical-repair-read.ts",
+    [
+      {
+        tier: "T2",
+        operations: ["readExactSessionEntryRowForCanonicalRepair"],
+        evidence:
+          "Shared exact-row probe extracted unchanged from canonical-repair.ts. Native callers are Doctor imports/retained recovery, developer benchmarks, full legacy claims after detect returns, and projection-state.ts branches gated by allowCanonicalRepair, supplied only by Doctor canonical-key repair. Legacy comparison uses session-retirement-read.worker.ts.",
       },
     ],
   ],

@@ -65,6 +65,38 @@ const DONE = "TARGET-COMPLETED-91ce";
 const WAKE =
   "Continue the original task in this conversation. Do not repeat a completed operation.";
 
+function continuationDiagnostic(
+  outcome: Record<string, unknown> | undefined,
+  child: SubagentRunRecord | undefined,
+) {
+  // The child JSON reporter retains assertion messages, but abbreviates object diffs.
+  // Select only bounded synthetic refusal/lifecycle facts, never the model input.
+  const text = (value: unknown) => (typeof value === "string" ? value.slice(0, 256) : null);
+  return JSON.stringify({
+    outcome: outcome
+      ? {
+          status: text(outcome.status),
+          reason: text(outcome.reason),
+          error: isRecord(outcome.error)
+            ? { code: text(outcome.error.code), message: text(outcome.error.message) }
+            : text(outcome.error),
+        }
+      : null,
+    child: child
+      ? {
+          runId: text(child.runId),
+          taskRunId: text(child.taskRunId),
+          pauseReason: child.pauseReason ?? null,
+          waitForMessage: child.waitForMessage === true,
+          endedReason: child.endedReason ?? null,
+          executionStatus: child.execution.status,
+          outcomeStatus: child.execution.outcome?.status ?? null,
+          outcomeError: text(child.execution.outcome?.error),
+        }
+      : null,
+  });
+}
+
 it.for(["resume", "followup", "failed-reload"] as const)(
   "settles the original %s after external reload without a model retry",
   async (scenario, { signal }) => {
@@ -455,7 +487,13 @@ it.for(["resume", "followup", "failed-reload"] as const)(
                 ["error", "forbidden", "uncertain", "not_delivered"].includes(
                   String(outcome.status),
                 ),
-                "Retained send replay must not fail before target execution",
+                "Retained send replay must not fail before target execution: " +
+                  continuationDiagnostic(
+                    outcome,
+                    [...subagentRuns.values()].find(
+                      (entry) => entry.childSessionKey === original.childSessionKey,
+                    ),
+                  ),
               ).toBe(false);
               return Promise.all([completed.promise, childAnnouncement.promise]);
             }),
@@ -562,7 +600,11 @@ it.for(["resume", "followup", "failed-reload"] as const)(
         .soft(effects, "Only a healthy reload permits the original continuation")
         .toBe(failReload ? 0 : 1);
       if (failReload) {
-        expect(target).toMatchObject({ runId: original.runId, pauseReason: "sessions_yield" });
+        expect(
+          target,
+          "Failed reload must preserve the original paused child: " +
+            continuationDiagnostic(undefined, target),
+        ).toMatchObject({ runId: original.runId, pauseReason: "sessions_yield" });
       } else if (mode === "resume") {
         expect.soft(target).toMatchObject({
           taskRunId: original.taskRunId ?? original.runId,

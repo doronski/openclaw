@@ -128,6 +128,11 @@ vi.mock("../plugins/provider-external-auth-core.js", async () =>
   (await import("../plugins/provider-external-auth.test-support.js")).createExternalAuthMock(),
 );
 
+vi.mock("../plugins/provider-runtime.runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../plugins/provider-runtime.runtime.js")>()),
+  formatProviderAuthProfileApiKeyWithPlugin: async () => undefined,
+}));
+
 vi.mock("../plugins/provider-runtime.js", () => ({
   buildProviderMissingAuthMessageWithPlugin: () => undefined,
   formatProviderAuthProfileApiKeyWithPlugin: async () => undefined,

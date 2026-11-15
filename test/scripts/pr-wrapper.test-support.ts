@@ -88,6 +88,7 @@ export function copyPrRoutingWrapperSources(destination: string): string[] {
     "scripts/lib/plain-gh.mjs",
     "scripts/lib/direct-run.mjs",
     "scripts/lib/record-shared.mjs",
+    "scripts/lib/release-changelog.mjs",
     "scripts/lib/managed-child-process.mts",
     "scripts/lib/managed-cleanup-handoff.mts",
     "scripts/windows-cmd-helpers.mjs",
