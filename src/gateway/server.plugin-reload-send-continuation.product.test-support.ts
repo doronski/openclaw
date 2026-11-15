@@ -74,7 +74,13 @@ function continuationDiagnostic(
   const text = (value: unknown) => (typeof value === "string" ? value.slice(0, 256) : null);
   return JSON.stringify({
     outcome: outcome
-      ? { status: text(outcome.status), reason: text(outcome.reason), error: text(outcome.error) }
+      ? {
+          status: text(outcome.status),
+          reason: text(outcome.reason),
+          error: isRecord(outcome.error)
+            ? { code: text(outcome.error.code), message: text(outcome.error.message) }
+            : text(outcome.error),
+        }
       : null,
     child: child
       ? {
