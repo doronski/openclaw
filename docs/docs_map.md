@@ -9290,6 +9290,7 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
 - Headings:
   - H2: Parameters
   - H2: Config
+  - H3: Linux command resource limits
   - H3: Modes
   - H3: Inline eval (strictInlineEval)
   - H3: PATH handling

@@ -15,7 +15,7 @@
  *      endpoint when `allowedTenantIds` is configured.
  *
  * The tests reach into `@microsoft/teams.apps`'s internal middleware/auth
- * subpath to drive `ServiceTokenValidator` and `createEntraTokenValidator`
+ * subpath to drive `InboundActivityTokenValidator` and `createEntraTokenValidator`
  * directly. Those aren't part of the SDK's public barrel today; if they
  * shift in a future SDK release this file lights up clearly. We chose this
  * over standing up an Express + supertest harness because the contract being
@@ -28,9 +28,9 @@
  * tokens against the matching private key.
  */
 
+import { InboundActivityTokenValidator } from "@microsoft/teams.apps/dist/middleware/auth/inbound-activity-token-validator.js";
 // Internal subpath imports. See file header for the rationale.
 import { createEntraTokenValidator } from "@microsoft/teams.apps/dist/middleware/auth/jwt-validator.js";
-import { ServiceTokenValidator } from "@microsoft/teams.apps/dist/middleware/auth/service-token-validator.js";
 import type { ILogger } from "@microsoft/teams.common";
 import { exportSPKI, generateKeyPair, SignJWT } from "jose";
 import { JwksClient, type SigningKey } from "jwks-rsa";
@@ -85,9 +85,9 @@ const debugLogger: ILogger = {
   trace: () => {},
 };
 
-describe("ServiceTokenValidator (inbound Bot Framework)", () => {
+describe("InboundActivityTokenValidator (inbound Bot Framework)", () => {
   it("accepts a token whose audience matches the bot app id", async () => {
-    const validator = new ServiceTokenValidator(APP_ID, undefined, undefined, debugLogger);
+    const validator = new InboundActivityTokenValidator(APP_ID, undefined, undefined, debugLogger);
     const token = await mintToken({
       aud: APP_ID,
       iss: "https://api.botframework.com",
@@ -99,7 +99,7 @@ describe("ServiceTokenValidator (inbound Bot Framework)", () => {
   });
 
   it("rejects a token with aud=api.botframework.com even when the appid claim matches the bot", async () => {
-    const validator = new ServiceTokenValidator(APP_ID);
+    const validator = new InboundActivityTokenValidator(APP_ID);
     // This is the confused-deputy shape: the token was issued *for* the
     // Connector resource (`aud=https://api.botframework.com`) and happens to
     // carry the bot's app id in `appid`. The SDK must reject it on the
