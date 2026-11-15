@@ -254,6 +254,11 @@ export const FIELD_LABELS: Record<string, string> = {
   "tools.exec.resourceLimits": "Exec Resource Limits",
   "tools.exec.resourceLimits.backend": "Exec Resource Backend",
   "tools.exec.resourceLimits.slice": "Exec Workload Slice",
+  "tools.exec.resourceLimits.hostMemoryAdmission": "Exec Host Memory Admission",
+  "tools.exec.resourceLimits.hostMemoryAdmission.minAvailableBytes":
+    "Exec Host Memory Headroom (Bytes)",
+  "tools.exec.resourceLimits.hostMemoryAdmission.maxFullPressureAvg10":
+    "Exec Host Maximum Full Memory PSI (10 Seconds, Percent)",
   "tools.exec.resourceLimits.memoryHighBytes": "Exec Memory High (Bytes)",
   "tools.exec.resourceLimits.memoryMaxBytes": "Exec Memory Maximum (Bytes)",
   "tools.exec.resourceLimits.memorySwapMaxBytes": "Exec Swap Maximum (Bytes)",

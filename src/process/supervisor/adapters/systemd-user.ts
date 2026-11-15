@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -12,6 +13,9 @@ const SYSTEMCTL = "/usr/bin/systemctl";
 const SYSTEMD_RUN = "/usr/bin/systemd-run";
 const CONTROL_TIMEOUT_MS = 10_000;
 const CGROUP_ROOT = "/sys/fs/cgroup";
+const HOST_METRIC_TIMEOUT_MS = 1_000;
+const HOST_METRIC_MAX_BYTES = 64 * 1024;
+const HOST_METRIC_MAX_CGROUP_DEPTH = 64;
 const DEFAULT_LIMITS = {
   memoryHighBytes: 1_073_741_824,
   memoryMaxBytes: 2_147_483_648,
@@ -21,12 +25,13 @@ const DEFAULT_LIMITS = {
   killGraceSec: 5,
 };
 
-type Limits = Required<ExecResourceLimitsConfig>;
+type Limits = ExecResourceLimitsConfig & typeof DEFAULT_LIMITS;
 type Properties = Record<string, string>;
 type Input = Extract<SpawnInput, { mode: "child" }> & { runId: string };
 
 export function resolveSystemdUserLimits(config: ExecResourceLimitsConfig): Limits {
   const limits = { ...DEFAULT_LIMITS, ...config };
+  const admission = limits.hostMemoryAdmission;
   if (
     limits.backend !== "systemd-user" ||
     !/^[a-zA-Z0-9][a-zA-Z0-9_-]*\.slice$/.test(limits.slice) ||
@@ -36,9 +41,19 @@ export function resolveSystemdUserLimits(config: ExecResourceLimitsConfig): Limi
     }) ||
     limits.memoryHighBytes > limits.memoryMaxBytes ||
     limits.timeoutSec > 2_147_483 ||
-    limits.killGraceSec > 2_147_483
+    limits.killGraceSec > 2_147_483 ||
+    (admission !== undefined &&
+      (!admission ||
+        !Number.isSafeInteger(admission.minAvailableBytes) ||
+        admission.minAvailableBytes <= 0 ||
+        !Number.isFinite(admission.maxFullPressureAvg10) ||
+        admission.maxFullPressureAvg10 < 0 ||
+        admission.maxFullPressureAvg10 > 100))
   ) {
     throw new Error("Invalid exec systemd-user resourceLimits");
+  }
+  if (admission) {
+    limits.hostMemoryAdmission = { ...admission };
   }
   return limits;
 }
@@ -141,6 +156,153 @@ function finiteNumber(value: string | undefined): number | undefined {
   return Number.isSafeInteger(number) ? number : undefined;
 }
 
+function cgroupBytes(value: string): bigint | undefined {
+  return /^[0-9]+$/.test(value) ? BigInt(value) : undefined;
+}
+
+async function readHostMetric(file: string, deadline: number): Promise<string> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    throw new Error("Host metric read deadline expired");
+  }
+  const controller = new AbortController();
+  const stream = createReadStream(file, {
+    start: 0,
+    // end is inclusive: the extra byte detects oversized input without reading it all.
+    end: HOST_METRIC_MAX_BYTES,
+    highWaterMark: HOST_METRIC_MAX_BYTES + 1,
+    signal: controller.signal,
+  });
+  const timeout = setTimeout(() => controller.abort(), remainingMs);
+  timeout.unref();
+  try {
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    for await (const chunk of stream) {
+      if (!Buffer.isBuffer(chunk)) {
+        throw new Error("Invalid host metric bytes");
+      }
+      bytes += chunk.length;
+      if (bytes > HOST_METRIC_MAX_BYTES) {
+        throw new Error("Host metric exceeds read bound");
+      }
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks).toString("utf8");
+  } finally {
+    clearTimeout(timeout);
+    if (!stream.closed) {
+      const closed = new Promise<void>((resolve) => {
+        stream.once("close", resolve);
+      });
+      stream.destroy();
+      await closed;
+    }
+  }
+}
+
+async function hostMemoryRefusal(
+  policy: NonNullable<Limits["hostMemoryAdmission"]>,
+  sliceCgroup: string,
+  startupDeadline: number,
+): Promise<
+  "host_memory_metrics_unavailable" | "host_memory_headroom" | "host_memory_pressure" | undefined
+> {
+  try {
+    const components = sliceCgroup.split("/").slice(1);
+    if (
+      components.length > HOST_METRIC_MAX_CGROUP_DEPTH ||
+      components.some((component) => !component || component === "." || component === "..")
+    ) {
+      return "host_memory_metrics_unavailable";
+    }
+    const directory = cgroupDirectory(sliceCgroup);
+    const ancestors: string[] = [];
+    // Root has no memory.max/current interfaces. Every non-root ancestor restricts descendants.
+    for (
+      let parent = path.dirname(directory);
+      parent !== CGROUP_ROOT;
+      parent = path.dirname(parent)
+    ) {
+      ancestors.push(parent);
+    }
+    const metricDeadline = Math.min(startupDeadline, Date.now() + HOST_METRIC_TIMEOUT_MS);
+    // Re-read the aggregate limit immediately before admission, not the earlier slice check.
+    const reads = await Promise.allSettled([
+      readHostMetric(path.join(directory, "memory.max"), metricDeadline),
+      readHostMetric("/proc/meminfo", metricDeadline),
+      readHostMetric("/proc/pressure/memory", metricDeadline),
+      ...ancestors.map((ancestor) =>
+        readHostMetric(path.join(ancestor, "memory.max"), metricDeadline),
+      ),
+    ]);
+    if (reads.some((read) => read.status === "rejected")) {
+      return "host_memory_metrics_unavailable";
+    }
+    const [memoryMax, meminfo, pressure, ...ancestorMaxima] = reads.map((read) =>
+      read.status === "fulfilled" ? read.value : "",
+    );
+    const aggregateBytes = finiteNumber(memoryMax.trim());
+    const availableLines = meminfo.split("\n").filter((line) => line.startsWith("MemAvailable:"));
+    const availableMatch =
+      availableLines.length === 1
+        ? /^MemAvailable:\s+([0-9]+)\s+kB$/.exec(availableLines[0])
+        : null;
+    const availableKiB = finiteNumber(availableMatch?.[1]);
+    const availableBytes = availableKiB === undefined ? undefined : availableKiB * 1024;
+    const fullLines = pressure.split("\n").filter((line) => /^full(?:\s|$)/.test(line));
+    const full =
+      fullLines.length === 1
+        ? /^full avg10=([0-9]+(?:\.[0-9]+)?) avg60=([0-9]+(?:\.[0-9]+)?) avg300=([0-9]+(?:\.[0-9]+)?) total=[0-9]+$/.exec(
+            fullLines[0],
+          )
+        : null;
+    if (
+      !aggregateBytes ||
+      availableBytes === undefined ||
+      !Number.isSafeInteger(availableBytes) ||
+      !full ||
+      full.slice(1).some((value) => !Number.isFinite(Number(value)) || Number(value) > 100)
+    ) {
+      return "host_memory_metrics_unavailable";
+    }
+    // Reserve the entire finite aggregate, including concurrent not-yet-charged jobs.
+    // Subtracting a separately sampled memory.current would permit release/recharge races.
+    if (BigInt(availableBytes) < BigInt(policy.minAvailableBytes) + BigInt(aggregateBytes)) {
+      return "host_memory_headroom";
+    }
+    const finiteAncestors = ancestorMaxima.flatMap((value, index) =>
+      value.trim() === "max"
+        ? []
+        : [{ directory: ancestors[index], maximum: cgroupBytes(value.trim()) }],
+    );
+    if (finiteAncestors.some((ancestor) => ancestor.maximum === undefined)) {
+      return "host_memory_metrics_unavailable";
+    }
+    const currents = await Promise.allSettled(
+      finiteAncestors.map((ancestor) =>
+        readHostMetric(path.join(ancestor.directory, "memory.current"), metricDeadline),
+      ),
+    );
+    const requiredBytes = BigInt(policy.minAvailableBytes) + BigInt(aggregateBytes);
+    for (const [index, read] of currents.entries()) {
+      const current = read.status === "fulfilled" ? cgroupBytes(read.value.trim()) : undefined;
+      const maximum = finiteAncestors[index].maximum;
+      if (current === undefined || maximum === undefined) {
+        return "host_memory_metrics_unavailable";
+      }
+      // Parent current already includes descendants; credit none of the leaf's existing charges.
+      if (maximum - current < requiredBytes) {
+        return "host_memory_headroom";
+      }
+    }
+    return Number(full[1]) > policy.maxFullPressureAvg10 ? "host_memory_pressure" : undefined;
+  } catch {
+    // Never expose raw file contents, errors, command arguments, or environment values.
+    return "host_memory_metrics_unavailable";
+  }
+}
+
 /** Own only the command service: the gateway and model runner stay outside its cgroup. */
 export async function createSystemdUserAdapter(input: Input): Promise<SpawnProcessAdapter> {
   if (process.platform !== "linux" || !input.resourceLimits || !input.cwd) {
@@ -158,6 +320,7 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
   const directory = cgroupDirectory(expectedCgroup);
   const timeoutMs = Math.min(input.timeoutMs ?? Infinity, limits.timeoutSec * 1000);
   const startedAtMs = Date.now();
+  const startupDeadline = startedAtMs + Math.min(timeoutMs, CONTROL_TIMEOUT_MS);
   const env = input.env ?? process.env;
   const names = Object.keys(env).filter((name) => env[name] !== undefined);
   if (names.some((name) => !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name))) {
@@ -213,6 +376,38 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
     "--",
     ...input.argv,
   ];
+  if (limits.hostMemoryAdmission) {
+    if (Date.now() >= startupDeadline) {
+      throw new Error("exec systemd-user service did not start before its deadline");
+    }
+    const refusal = await hostMemoryRefusal(
+      limits.hostMemoryAdmission,
+      sliceCgroup,
+      startupDeadline,
+    );
+    if (Date.now() >= startupDeadline) {
+      throw new Error("exec systemd-user service did not start before its deadline");
+    }
+    if (refusal) {
+      emitDiagnosticEvent({
+        type: "exec.process.containment",
+        phase: "refused",
+        runId: input.runId,
+        sessionId: input.sessionId,
+        toolCallId: input.toolCallId,
+        unit,
+        expectedCgroup,
+        startedAtMs,
+        endedAtMs: Date.now(),
+        result: refusal,
+        exitCode: null,
+      });
+      throw new Error(`exec systemd-user host memory admission refused: ${refusal}`);
+    }
+  }
+  if (Date.now() >= startupDeadline) {
+    throw new Error("exec systemd-user service did not start before its deadline");
+  }
   const child = await createChildAdapter({
     argv,
     cwd: input.cwd,
@@ -349,7 +544,6 @@ export async function createSystemdUserAdapter(input: Input): Promise<SpawnProce
   };
   // Fast successful units can unload before inspection. Keep unknown PID/peak
   // absent; successful systemd-run --wait still proves the service terminated.
-  const startupDeadline = startedAtMs + Math.min(timeoutMs, CONTROL_TIMEOUT_MS);
   while (true) {
     await observe();
     if (controlFailure) {

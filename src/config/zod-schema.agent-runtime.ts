@@ -556,6 +556,13 @@ const ToolExecResourceLimitsSchema = z
   .object({
     backend: z.literal("systemd-user"),
     slice: z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]*\.slice$/),
+    hostMemoryAdmission: z
+      .object({
+        minAvailableBytes: z.number().int().positive().safe(),
+        maxFullPressureAvg10: z.number().min(0).max(100),
+      })
+      .strict()
+      .optional(),
     memoryHighBytes: z.number().int().positive().safe().optional(),
     memoryMaxBytes: z.number().int().positive().safe().optional(),
     memorySwapMaxBytes: z.number().int().nonnegative().safe().optional(),

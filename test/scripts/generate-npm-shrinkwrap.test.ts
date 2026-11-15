@@ -45,6 +45,82 @@ describe("generate-npm-shrinkwrap", () => {
     expect(normalized.peerDependencies).toEqual({});
   });
 
+  it("qualifies exact nested npm pins without changing selector or alias contracts", () => {
+    const overrides = {
+      forced: "8.0.0",
+      "nanoid@^3": "3.3.18",
+      "undici@^7": "7.30.2",
+      parent: {
+        ".": "5.0.0",
+        "@scope/child": { ".": "1.2.3-rc.1", grandchild: "2.0.0" },
+        request: "npm:@cypress/request@3.0.10",
+        alias: { ".": "npm:@scope/replacement@3.0.10", child: "4.0.0" },
+        floating: "^1.0.0",
+        tagged: "latest",
+        reference: "$direct",
+        $reference: "1.0.0",
+        "qualified@^2": "2.1.0",
+        "@scope/qualified@^1": "1.5.0",
+      },
+    };
+    const before = structuredClone(overrides);
+
+    expect(packageJsonForShrinkwrap({}, overrides).overrides).toEqual({
+      forced: "8.0.0",
+      "nanoid@^3": "3.3.18",
+      "undici@^7": "7.30.2",
+      parent: {
+        ".": "5.0.0",
+        "@scope/child@1.2.3-rc.1": { ".": "1.2.3-rc.1", "grandchild@2.0.0": "2.0.0" },
+        request: "npm:@cypress/request@3.0.10",
+        alias: { ".": "npm:@scope/replacement@3.0.10", "child@4.0.0": "4.0.0" },
+        floating: "^1.0.0",
+        tagged: "latest",
+        reference: "$direct",
+        $reference: "1.0.0",
+        "qualified@^2": "2.1.0",
+        "@scope/qualified@^1": "1.5.0",
+      },
+    });
+    expect(overrides).toEqual(before);
+  });
+
+  it("keeps pretty-ms major forks and their parse-ms pins separate in npm output", () => {
+    const packageJson = {
+      dependencies: { current: "1.0.0", legacy: "1.0.0" },
+      overrides: { legacy: { "pretty-ms": { ".": "8.0.0", "parse-ms": "3.0.0" } } },
+    };
+    const policy = { current: { "pretty-ms": { ".": "9.3.0", "parse-ms": "4.0.0" } } };
+    const before = structuredClone({ packageJson, policy });
+
+    expect(packageJsonForShrinkwrap(packageJson, policy).overrides).toEqual({
+      legacy: { "pretty-ms@8.0.0": { ".": "8.0.0", "parse-ms@3.0.0": "3.0.0" } },
+      current: { "pretty-ms@9.3.0": { ".": "9.3.0", "parse-ms@4.0.0": "4.0.0" } },
+    });
+    expect({ packageJson, policy }).toEqual(before);
+  });
+
+  it.each([
+    { child: "1.2.3", "child@1.2.3": "1.2.3" },
+    { "child@1.2.3": "1.2.3", child: "1.2.3" },
+    { "@scope/child": "1.2.3", "@scope/child@1.2.3": "1.2.3" },
+  ])("refuses colliding npm selectors without changing their input", (children) => {
+    const policy = { parent: children };
+    const before = structuredClone(policy);
+
+    expect(() => packageJsonForShrinkwrap({}, policy)).toThrow(/npm override selector collision/u);
+    expect(policy).toEqual(before);
+  });
+
+  it("retains the original bare-key conflict refusal before npm serialization", () => {
+    expect(() =>
+      packageJsonForShrinkwrap(
+        { overrides: { parent: { child: "1.0.0" } } },
+        { parent: { child: "2.0.0" } },
+      ),
+    ).toThrow(/overrides\.child conflicts with pnpm lock policy/u);
+  });
+
   it("runs npm shrinkwrap through cmd.exe for Windows npm shims", () => {
     const execPath = "C:\\nodejs\\node.exe";
     const npmCmdPath = path.win32.resolve(path.win32.dirname(execPath), "npm.cmd");

@@ -6,10 +6,10 @@
   "type": "module",
   "dependencies": {
     "@copilotkit/aimock": "1.35.0",
-    "@modelcontextprotocol/sdk": "1.29.0",
+    "@modelcontextprotocol/sdk": "1.32.0",
     "playwright-core": "1.61.1",
     "yaml": "2.9.0",
-    "zod": "4.4.3"
+    "zod": "4.6.6"
   },
   "devDependencies": {
     "@openclaw/crabline": "0.1.9",
