@@ -260,11 +260,11 @@ const filePage = () =>
 
 describe("combined security review entry point", () => {
   it.each([
-    { role: "maintain", decision: "success", reviewState: "success" },
-    { role: "write", decision: "failure", reviewState: "pending" },
+    { role: "maintain", decision: "success", reviewStates: ["pending", "success"] },
+    { role: "write", decision: "failure", reviewStates: ["pending", "pending"] },
   ])(
     "enforces both guards without a rollout lookup for $role authors",
-    ({ role, decision, reviewState }) => {
+    ({ role, decision, reviewStates }) => {
       const result = evaluate(
         { [rolePath]: { role_name: role } },
         "enforce",
@@ -273,7 +273,14 @@ describe("combined security review entry point", () => {
         false,
       );
       expectReview(result, ["pending", decision]);
-      expect(result.reviews.filter((entry) => entry.body?.state === reviewState)).toHaveLength(2);
+      // Each unresolved guard publishes pending when opened and when decided.
+      for (const context of ["openclaw/dependency-review", "openclaw/security-sensitive-review"]) {
+        expect(
+          result.reviews
+            .filter((entry) => entry.body?.context === context)
+            .map((entry) => entry.body?.state),
+        ).toEqual(reviewStates);
+      }
       expect(requestsFor(result, "GET /repos/openclaw/openclaw/pulls/152415")).toEqual([]);
     },
   );

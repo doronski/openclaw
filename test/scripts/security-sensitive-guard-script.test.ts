@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { parse, stringify } from "yaml";
 import { loadSecurityReviewPolicy } from "../../scripts/github/security-review-policy.mjs";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
@@ -62,6 +63,10 @@ const commentEvent = {
   comment: approval,
 };
 const { collectSecuritySensitiveChanges } = loadSecurityReviewPolicy();
+const rolloutPolicy = stringify({
+  ...parse(readFileSync(path.resolve(".github/security-review-policy.yml"), "utf8")),
+  rollout: { "pull-request": rollout.number },
+});
 
 const pullRequest = {
   number: 7,
@@ -86,6 +91,7 @@ type Options = {
   changedFiles?: number;
   createdAt?: string;
   policy?: string;
+  mode?: "detect" | "autoscrub" | "enforce";
   script?: "security-sensitive-guard" | "dependency-guard";
 };
 
@@ -161,6 +167,12 @@ function runGuard(options: Options = {}) {
         GITHUB_REPOSITORY: "openclaw/openclaw",
         GITHUB_RUN_ID: "123",
         OPENCLAW_GUARD_TEST_FIXTURE: fixturePath,
+        ...(options.mode
+          ? {
+              OPENCLAW_DEPENDENCY_GUARD_MODE: options.mode,
+              OPENCLAW_DEPENDENCY_GUARD_AUTOSCRUB_TOKEN: "fixture-autoscrub-token",
+            }
+          : {}),
       },
     },
   );
@@ -367,6 +379,7 @@ describe("security-sensitive guard entry point", () => {
       const pr = { ...pullRequest, created_at: "2025-01-01T00:00:00Z" };
       const result = runGuard({
         script,
+        policy: rolloutPolicy,
         routes: {
           [`GET ${pullPath}`]: {
             responses: [
@@ -452,6 +465,7 @@ describe("security-sensitive guard entry point", () => {
         ({ status, ancestor, enforced }) => {
           const result = runGuard({
             script,
+            policy: rolloutPolicy,
             files,
             createdAt: "2025-11-01T00:00:00Z",
             routes: {
@@ -480,6 +494,7 @@ describe("security-sensitive guard entry point", () => {
       ])("invalidates a previous approval when rollout metadata is $name", ({ response }) => {
         const result = runGuard({
           script,
+          policy: rolloutPolicy,
           files,
           routes: { "GET /repos/openclaw/openclaw/pulls/152415": response },
         });
@@ -488,6 +503,30 @@ describe("security-sensitive guard entry point", () => {
       });
     },
   );
+
+  it("does not approve or autoscrub grandfathered lockfile PRs in any mode", () => {
+    for (const mode of ["detect", "autoscrub", "enforce"] as const) {
+      const result = expectGuard(
+        {
+          script: "dependency-guard",
+          policy: rolloutPolicy,
+          mode,
+          createdAt: "2025-11-01T00:00:00Z",
+          files: [{ filename: "pnpm-lock.yaml" }],
+          routes: {
+            [`GET /repos/openclaw/openclaw/compare/${rolloutSha}...${headSha}`]: {
+              base_commit: { sha: rolloutSha },
+              merge_base_commit: { sha: "b".repeat(40) },
+              status: "diverged",
+            },
+          },
+        },
+        [],
+      );
+      expect(result.stdout).toContain("grandfathered");
+      expect(result.requests.every((call) => call.method === "GET")).toBe(true);
+    }
+  });
 
   describe("trusted YAML policy", () => {
     const policy = `
