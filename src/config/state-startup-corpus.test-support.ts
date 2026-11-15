@@ -154,6 +154,7 @@ export function createStateStartupCorpusFixture() {
         const home = lifetime.createTempDir("openclaw-state-corpus-");
         const stateDir = path.join(home, ".openclaw");
         const scope = createSqliteReadOnlyWorkerScope({ signal, deadlineOwnedByCaller: false });
+        const pluginCaches = new AsyncDisposableStack();
         const diagnostics = createFixtureDiagnostics("state-startup-corpus");
         const onAbort = () => diagnostics.report("abort");
         signal.addEventListener("abort", onAbort, { once: true });
@@ -202,14 +203,16 @@ export function createStateStartupCorpusFixture() {
             for (let pass = 0; pass < 2; pass += 1) {
               setRuntimeConfigSnapshot(config);
               phase("doctor-repair");
-              await withStateMigrationBackupForTest({ env }, () =>
-                runDoctorConfigPreflight({
+              await withStateMigrationBackupForTest({ env }, async () => {
+                const doctor = await runDoctorConfigPreflight({
                   observe: false,
                   repairPrefixedConfig: true,
                   doctorOnlyStateMigrations: true,
                   preparePluginMetadataSnapshot: true,
-                }),
-              );
+                });
+                // Doctor transfers its final metadata cache to the caller's lifetime.
+                pluginCaches.use(doctor.pluginCache);
+              });
               phase("startup-config-read");
               const initialSnapshotRead = await io.readConfigFileSnapshotWithPluginMetadata();
               phase("startup-config");
@@ -304,6 +307,7 @@ export function createStateStartupCorpusFixture() {
           errors.push(error);
         }
         for (const [stage, close] of [
+          ["plugin-cache-close", () => pluginCaches.disposeAsync()],
           ["agent-database-close", () => closeOpenClawAgentDatabasesAsync(stateDir)],
           ["state-database-close", () => closeOpenClawStateDatabaseAsync()],
           ["sqlite-worker-scope-close", () => scope.close()],
