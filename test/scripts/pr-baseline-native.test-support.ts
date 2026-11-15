@@ -6,7 +6,10 @@ import { afterAll, expect } from "vitest";
 import { copyTreeCloseOnExec } from "../helpers/close-on-exec-copy.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { validReview } from "./pr-review-artifact-fixture.js";
-import { copyPrWrapperSources, linkPrWrapperDependencies } from "./pr-wrapper.test-support.js";
+import {
+  copyPrRoutingWrapperSources,
+  linkPrWrapperDependencies,
+} from "./pr-wrapper.test-support.js";
 
 const cliFlags = (values: Record<string, string>) => Object.entries(values).flat();
 
@@ -180,7 +183,9 @@ export function createBaselineFixture(
   ).toBe(0);
   const signers = join(root, "signers");
   writeFileSync(signers, `fixture@example.invalid ${readFileSync(`${key}.pub`, "utf8")}`);
-  copyPrWrapperSources(repo);
+  // Baseline flows use tooling against a registered worktree; the routing
+  // closure keeps application sources out of fixture copies and native anchors.
+  copyPrRoutingWrapperSources(repo);
   linkPrWrapperDependencies(repo);
   git(repo, "init", "-q", "-b", "main");
   for (const [name, value] of Object.entries({
