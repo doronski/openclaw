@@ -94,9 +94,28 @@ it.each(["default", "per-agent"])(
         },
       },
       async (state) => {
+        const started = performance.now();
+        const elapsedMs = () => Math.round(performance.now() - started);
+        const exchanges: Array<{ route: string; receivedMs: number; finishedMs?: number }> = [];
         const requests: Array<{ path?: string; auth?: string; body: unknown }> = [];
         await withServer(
           (request, response) => {
+            // Keep deadline evidence at the HTTP boundary without copying credentials or bodies.
+            const exchange: (typeof exchanges)[number] = {
+              route:
+                request.url === "/v1/catalog"
+                  ? "catalog"
+                  : request.url === "/v1/native/openai/v1/decisions"
+                    ? "decision"
+                    : "unexpected",
+              receivedMs: elapsedMs(),
+            };
+            if (exchanges.length < 8) {
+              exchanges.push(exchange);
+            }
+            response.once("finish", () => {
+              exchange.finishedMs = elapsedMs();
+            });
             const chunks: Buffer[] = [];
             request.on("data", (chunk: Buffer) => chunks.push(chunk));
             request.on("end", () => {
@@ -128,7 +147,9 @@ it.each(["default", "per-agent"])(
                 "openai/gpt-6-luna",
                 "main",
               );
+              const evaluationStartedMs = elapsedMs();
               const outcome = await evaluate();
+              const evaluationFinishedMs = elapsedMs();
               expect(
                 listDecisionModels({
                   config,
@@ -145,7 +166,17 @@ it.each(["default", "per-agent"])(
               expect(
                 outcome,
                 outcome.status === "unavailable"
-                  ? `Decision unavailable: ${outcome.reason}`
+                  ? `Decision unavailable: ${JSON.stringify({
+                      reason: outcome.reason,
+                      selector,
+                      evaluationStartedMs,
+                      evaluationFinishedMs,
+                      exchanges,
+                      hosts: registry.decisionProviders.map(({ host }) => {
+                        const { activeRequests, successCount, reasons } = host.inspect(config);
+                        return { activeRequests, successCount, reasons };
+                      }),
+                    })}`
                   : undefined,
               ).toMatchObject({
                 status: "ok",
