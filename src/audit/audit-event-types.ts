@@ -30,6 +30,19 @@ export type AuditEventErrorCode =
 
 export type AuditEventActorType = "agent" | "system";
 
+/** Local SQLite correlation only; never projected by audit.list or diagnostic exporters. */
+export type AuditExecProcess = {
+  runId: string;
+  unit: string;
+  expectedCgroup: string;
+  cgroup?: string;
+  pid?: number;
+  startedAt: number;
+  endedAt?: number;
+  exitCode?: number | null;
+  cleanupVerified?: boolean;
+};
+
 /** Durable columns accepted from trusted lifecycle projection. */
 export type AuditEventInput = {
   sourceSequence: number;
@@ -46,10 +59,11 @@ export type AuditEventInput = {
   runId: string;
   toolCallId?: string;
   toolName?: string;
+  execProcess?: AuditExecProcess;
 };
 
 /** Public record returned by the bounded operator read surface. */
-export type AuditEventRecord = AuditEventInput & {
+export type AuditEventRecord = Omit<AuditEventInput, "execProcess"> & {
   sequence: number;
   eventId: string;
   redaction: "metadata_only";

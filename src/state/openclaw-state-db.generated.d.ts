@@ -87,6 +87,15 @@ export interface AuditEvents {
   agent_id: string;
   error_code: string | null;
   event_id: string;
+  exec_cgroup: string | null;
+  exec_cleanup_verified: number | null;
+  exec_ended_at: number | null;
+  exec_exit_code: number | null;
+  exec_expected_cgroup: string | null;
+  exec_pid: number | null;
+  exec_run_id: string | null;
+  exec_started_at: number | null;
+  exec_unit: string | null;
   kind: string;
   occurred_at: number;
   run_id: string;

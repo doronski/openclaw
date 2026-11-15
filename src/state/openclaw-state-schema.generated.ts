@@ -82,7 +82,16 @@ CREATE TABLE IF NOT EXISTS audit_events (
   session_id TEXT,
   run_id TEXT NOT NULL,
   tool_call_id TEXT,
-  tool_name TEXT
+  tool_name TEXT,
+  exec_run_id TEXT,
+  exec_unit TEXT,
+  exec_expected_cgroup TEXT,
+  exec_cgroup TEXT,
+  exec_pid INTEGER,
+  exec_started_at INTEGER,
+  exec_ended_at INTEGER,
+  exec_exit_code INTEGER,
+  exec_cleanup_verified INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_events_time

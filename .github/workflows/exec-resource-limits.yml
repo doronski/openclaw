@@ -20,7 +20,11 @@ on:
       - src/cron/service/timer.test.ts
       - src/cron/service.persists-delivered-status.test.ts
       - src/gateway/server-cron.test.ts
+      - src/gateway/server-runtime-subscriptions*
       - src/infra/diagnostic-events.ts
+      - src/infra/agent-events*
+      - src/audit/**
+      - src/state/openclaw-state-*
       - src/logging/diagnostic-stability*
       - extensions/diagnostics-otel/src/service*
       - src/process/supervisor/**
@@ -44,7 +48,11 @@ on:
       - src/cron/service/timer.test.ts
       - src/cron/service.persists-delivered-status.test.ts
       - src/gateway/server-cron.test.ts
+      - src/gateway/server-runtime-subscriptions*
       - src/infra/diagnostic-events.ts
+      - src/infra/agent-events*
+      - src/audit/**
+      - src/state/openclaw-state-*
       - src/logging/diagnostic-stability*
       - extensions/diagnostics-otel/src/service*
       - src/process/supervisor/**
@@ -105,6 +113,9 @@ jobs:
         run: >-
           pnpm test
           src/process/supervisor/adapters/systemd-user.test.ts
+          src/audit/audit-events.test.ts
+          src/infra/agent-events.test.ts
+          src/state/openclaw-state-db.test.ts
           src/process/supervisor/supervisor.test.ts
           src/agents/bash-tools.exec-runtime.test.ts
           src/agents/bash-tools.exec-host-gateway.test.ts
@@ -116,6 +127,7 @@ jobs:
           src/cron/service/timer.test.ts
           src/cron/service/timer.regression.test.ts
           src/gateway/server-cron.test.ts
+          src/gateway/server-runtime-subscriptions.test.ts
           src/gateway/server-cron-notifications.test.ts
           src/logging/diagnostic-stability.test.ts
           extensions/diagnostics-otel/src/service.test.ts

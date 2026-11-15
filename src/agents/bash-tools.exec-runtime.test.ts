@@ -777,6 +777,7 @@ describe("resource-limited exec runtime", () => {
         notifyOnExit: false,
         timeoutSec: 300,
         toolCallId: "tool-1",
+        sessionKey: "agent:coder:execution-key",
         resourceLimits,
       });
       await run.promise;
@@ -784,6 +785,7 @@ describe("resource-limited exec runtime", () => {
         expect.objectContaining({
           resourceLimits,
           toolCallId: "tool-1",
+          sessionId: "agent:coder:execution-key",
           timeoutMs: 60_000,
         }),
       );
