@@ -113,9 +113,14 @@ suite.define(() => {
             return [line.slice(0, colon), line.slice(colon + 1).trim()];
           }));
           const state = fields.State?.charAt(0);
-          return fields.CoreDumping === "1" || ["Z", "T", "t"].includes(state)
-            ? { pid, Name: fields.Name?.slice(0, 64), State: state, CoreDumping: fields.CoreDumping?.slice(0, 1), truncated: status.truncated }
-            : undefined;
+          const processLimits = readProc("/proc/" + pid + "/limits");
+          return {
+            pid, Name: fields.Name?.slice(0, 64), State: state,
+            CoreDumping: fields.CoreDumping?.slice(0, 1), truncated: status.truncated,
+            maxCoreFileSize: processLimits.error !== undefined
+              ? { error: processLimits.error }
+              : { value: processLimits.value?.split("\\n").find(line => line.startsWith("Max core file size"))?.slice(0, 256), truncated: processLimits.truncated },
+          };
         }).filter(row => row !== undefined);
         console.error("[ui-browser-lifetime] renderer process sample", JSON.stringify({ sample: ++samples, at: new Date().toISOString(), inspected: rendererPids.length, processes }));
         if (samples === 14) clearInterval(processTimer);
