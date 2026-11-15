@@ -68,6 +68,7 @@ function labelFixture(labelNames: string[], addError?: Error, execute = executeS
   const context = {
     repo: { owner: "openclaw", repo: "openclaw" },
     payload: {
+      repository: { owner: { type: "Organization" } },
       pull_request: pullRequest,
       issue: pullRequest,
       inputs: { max_prs: "1", per_page: "1" },
