@@ -1,0 +1,2 @@
+# Report the actual esbuild import chain when an existing worker-isolation assertion fails.
+28
