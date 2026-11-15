@@ -26,6 +26,21 @@ const rollout = {
   merge_commit_sha: rolloutSha,
   base: { ref: "main", repo: { full_name: "openclaw/openclaw" } },
 };
+// Legacy rollout scenarios must not inherit this fork's always-enforced policy.
+const rolloutPolicy = `
+rollout:
+  pull-request: 152415
+exclude: {}
+categories:
+  protected:
+    description: Controls a protected product responsibility.
+    review: Require maintainer review for this responsibility.
+    paths: ["src/gateway/auth.ts"]
+dependencies:
+  manifests: ["**/package.json"]
+  lockfiles: ["**/pnpm-lock.yaml"]
+  other: ["pnpm-workspace.yaml"]
+`;
 const marker = "<!-- openclaw:security-sensitive-guard -->";
 const requestedAt = "2026-01-01T00:00:00Z";
 const notice = {
@@ -367,6 +382,7 @@ describe("security-sensitive guard entry point", () => {
       const pr = { ...pullRequest, created_at: "2025-01-01T00:00:00Z" };
       const result = runGuard({
         script,
+        policy: rolloutPolicy,
         routes: {
           [`GET ${pullPath}`]: {
             responses: [
@@ -440,9 +456,22 @@ describe("security-sensitive guard entry point", () => {
   });
 
   describe.each(["security-sensitive-guard", "dependency-guard"] as const)(
-    "%s rollout enforcement",
+    "%s policy enforcement",
     (script) => {
       const files = guardFiles(script);
+
+      it("requires approval for old PRs without a rollout window", () => {
+        const result = expectGuard(
+          {
+            script,
+            files,
+            createdAt: "2025-11-01T00:00:00Z",
+            routes: { "GET /repos/openclaw/openclaw/pulls/152415": { httpError: 403 } },
+          },
+          ["pending", "pending"],
+        );
+        expect(result.comment).toContain("/allow-");
+      });
 
       it.each([
         { status: "diverged", ancestor: "b".repeat(40), enforced: false },
@@ -453,6 +482,7 @@ describe("security-sensitive guard entry point", () => {
           const result = runGuard({
             script,
             files,
+            policy: rolloutPolicy,
             createdAt: "2025-11-01T00:00:00Z",
             routes: {
               [`GET /repos/openclaw/openclaw/compare/${rolloutSha}...${headSha}`]: {
@@ -481,6 +511,7 @@ describe("security-sensitive guard entry point", () => {
         const result = runGuard({
           script,
           files,
+          policy: rolloutPolicy,
           routes: { "GET /repos/openclaw/openclaw/pulls/152415": response },
         });
         expect(result.status).toBe(1);
