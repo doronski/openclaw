@@ -57,16 +57,23 @@ jobs:
 
       - name: Install opengrep
         env:
-          # Pin both the install script (by commit SHA) and the binary version.
-          # The script SHA must match the v1.22.0 release tag in opengrep/opengrep
-          # so a compromised or force-pushed `main` cannot RCE in our CI runner.
-          # Bump both together when upgrading.
+          # Pin the official Linux x86_64 release asset and its published SHA256.
+          # Avoid the install script's release-list lookup for an exact version.
+          # Bump the version and digest together when upgrading.
           OPENGREP_VERSION: v1.22.0
-          OPENGREP_INSTALL_SHA: f458d7f0d52cc58eae1ca3cf3d5caf101e637519
+          OPENGREP_SHA256: 45bcd58440e397ed52c50e953ccf5948909ea77087c9186fc7d277216f62e319
         run: |
-          curl -fsSL "https://raw.githubusercontent.com/opengrep/opengrep/${OPENGREP_INSTALL_SHA}/install.sh" \
-            | bash -s -- -v "$OPENGREP_VERSION"
-          echo "$HOME/.opengrep/cli/latest" >> "$GITHUB_PATH"
+          set -euo pipefail
+          if [[ "$(uname -s):$(uname -m)" != "Linux:x86_64" ]]; then
+            echo "::error::The pinned opengrep asset requires a Linux x86_64 runner."
+            exit 1
+          fi
+          opengrep_dir="$(mktemp -d "$RUNNER_TEMP/opengrep.XXXXXX")"
+          curl -fsSL --output "$opengrep_dir/opengrep" \
+            "https://github.com/opengrep/opengrep/releases/download/${OPENGREP_VERSION}/opengrep_manylinux_x86"
+          printf '%s  %s\n' "$OPENGREP_SHA256" "$opengrep_dir/opengrep" | sha256sum --check --strict
+          chmod 0755 "$opengrep_dir/opengrep"
+          echo "$opengrep_dir" >> "$GITHUB_PATH"
 
       - name: Verify opengrep
         run: opengrep --version
