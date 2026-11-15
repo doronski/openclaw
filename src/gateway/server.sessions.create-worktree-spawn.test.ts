@@ -41,6 +41,7 @@ import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-cha
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { createGatewayInstanceRuntime } from "./server-instance-runtime.js";
 import { createRequestGatewayMethodRegistry } from "./server-methods.js";
+import * as chatDispatch from "./server-methods/chat-send-agent-dispatch.js";
 import { disposeSessionReadContexts } from "./server-methods/sessions-read-cache.test-support.js";
 import { createWorktreeSpawnRepositoryFixture } from "./server.sessions.create-worktree-spawn.test-support.js";
 import {
@@ -258,6 +259,7 @@ test.each([
     const project = await registerProjectRegistry({ path: otherRepository });
     projectCloneMocks.materializeProjectClone.mockResolvedValue(project);
     const { context, registerRun, spawn } = await createVisibleSpawnTool();
+    const dispatch = vi.spyOn(chatDispatch, "startChatDispatch");
     const createWorktree = vi.spyOn(ManagedWorktreeService.prototype, "createWithOutcome");
     const bindChild = vi.spyOn(sessionAccess, "createSessionEntryWithTranscript");
     mockDispatch();
@@ -292,6 +294,8 @@ test.each([
       }
       if (childKey) {
         await settleWorkspaceRuns(context, storePath, childKey);
+        // Controller settlement precedes dispatch's durable failure publication.
+        await Promise.all(dispatch.mock.results.map(({ value }) => value));
       }
       const child = childKey ? readEntry(childKey) : undefined;
       if (!worktree) {
@@ -341,6 +345,7 @@ test.each([
     } finally {
       if (childKey) {
         await settleWorkspaceRuns(context, storePath, childKey, true);
+        await Promise.all(dispatch.mock.results.map(({ value }) => value));
       }
       dispatchInboundMessageMock.mockReset();
     }
