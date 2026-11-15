@@ -45,7 +45,7 @@ const endpoint = inject("controlUiE2eChromium").wsEndpoint;
         path.join(root, "first.test.ts"),
         `${imports}
 suite.define(() => {
-  it("disconnects only its own contexts", async () => {
+  it("disconnects only its own contexts", async (context) => {
     fs.writeFileSync(${JSON.stringify(endpointFile)}, endpoint);
     const sibling = await chromium.connect(endpoint);
     try {
@@ -59,11 +59,79 @@ suite.define(() => {
       await crashed.goto("data:text/html,<title>synthetic-private-page</title>");
       const cdp = await ownContext.newCDPSession(crashed);
       const { targetInfo } = await cdp.send("Target.getTargetInfo");
+      const diagnosticCode = (error: unknown) => {
+        const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+        if (typeof code === "number" && Number.isSafeInteger(code)) return code;
+        return typeof code === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(code) ? code : "UNAVAILABLE";
+      };
+      const readProc = (file: string, maxBytes = 4096) => {
+        let descriptor: number | undefined;
+        try {
+          descriptor = fs.openSync(file, "r");
+          const bytes = Buffer.alloc(maxBytes);
+          const length = fs.readSync(descriptor, bytes, 0, maxBytes, null);
+          return { value: bytes.subarray(0, length).toString("utf8").trim(), truncated: length === maxBytes };
+        } catch (error) {
+          return { error: diagnosticCode(error) };
+        } finally {
+          if (descriptor !== undefined) fs.closeSync(descriptor);
+        }
+      };
+      let rendererPids: number[] = [];
+      if (process.platform === "linux") {
+        const limits = readProc("/proc/self/limits");
+        console.error("[ui-browser-lifetime] core policy", JSON.stringify({
+          corePattern: readProc("/proc/sys/kernel/core_pattern", 256),
+          corePipeLimit: readProc("/proc/sys/kernel/core_pipe_limit", 256),
+          coredumpFilter: readProc("/proc/self/coredump_filter", 256),
+          maxCoreFileSize: limits.error !== undefined ? { error: limits.error } : { value: limits.value?.split("\\n").find(line => line.startsWith("Max core file size"))?.slice(0, 256), truncated: limits.truncated },
+        }));
+        let browserCdp;
+        try {
+          browserCdp = await suite.browser.newBrowserCDPSession();
+          const { processInfo } = await browserCdp.send("SystemInfo.getProcessInfo");
+          const renderers = processInfo.filter(({ type, id }) => type === "renderer" && Number.isSafeInteger(id) && id > 0);
+          rendererPids = renderers.slice(0, 32).map(({ id }) => id);
+          // Correlate these OS PIDs with Chromium's FATAL line; do not infer page ownership.
+          console.error("[ui-browser-lifetime] renderer PIDs", JSON.stringify({ pids: rendererPids, omitted: renderers.length - rendererPids.length }));
+        } catch (error) {
+          console.error("[ui-browser-lifetime] renderer PIDs", JSON.stringify({ error: diagnosticCode(error) }));
+        } finally {
+          await browserCdp?.detach().catch(error => {
+            console.error("[ui-browser-lifetime] process observer detach", JSON.stringify({ error: diagnosticCode(error) }));
+          });
+        }
+      }
       const crashEvent = crashed.waitForEvent("crash");
+      let samples = 0;
+      const processTimer = process.platform === "linux" ? setInterval(() => {
+        const processes = rendererPids.map(pid => {
+          const status = readProc("/proc/" + pid + "/status");
+          if (status.error !== undefined) return { pid, error: status.error };
+          const fields = Object.fromEntries((status.value ?? "").split("\\n").map(line => {
+            const colon = line.indexOf(":");
+            return [line.slice(0, colon), line.slice(colon + 1).trim()];
+          }));
+          const state = fields.State?.charAt(0);
+          return fields.CoreDumping === "1" || ["Z", "T", "t"].includes(state)
+            ? { pid, Name: fields.Name?.slice(0, 64), State: state, CoreDumping: fields.CoreDumping?.slice(0, 1), truncated: status.truncated }
+            : undefined;
+        }).filter(row => row !== undefined);
+        console.error("[ui-browser-lifetime] renderer process sample", JSON.stringify({ sample: ++samples, at: new Date().toISOString(), inspected: rendererPids.length, processes }));
+        if (samples === 14) clearInterval(processTimer);
+      }, 1000) : undefined;
+      processTimer?.unref();
+      const stopProcessSamples = () => clearInterval(processTimer);
+      context.signal.addEventListener("abort", stopProcessSamples, { once: true });
       console.error("[ui-browser-lifetime] dispatching Page.crash");
       const crashCommand = cdp.send("Page.crash").catch(() => {});
       console.error("[ui-browser-lifetime] waiting for page crash event");
-      await crashEvent;
+      try {
+        await crashEvent;
+      } finally {
+        stopProcessSamples();
+        context.signal.removeEventListener("abort", stopProcessSamples);
+      }
       // The raw CDP command can stay pending until its crashed target closes.
       console.error("[ui-browser-lifetime] closing crashed page");
       await crashed.close();
@@ -171,6 +239,18 @@ export default defineConfig({
         });
         joined = true;
         expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
+        const output = result.stdout + result.stderr;
+        for (const marker of [
+          "dispatching Page.crash",
+          "waiting for page crash event",
+          "closing crashed page",
+          "joining Page.crash command",
+          "waiting for native crash diagnostic",
+          "native crash diagnostic observed",
+        ]) {
+          expect(output).toContain(`[ui-browser-lifetime] ${marker}`);
+        }
+        expect(output).toContain("[ui-e2e] Chromium target crashed");
         const endpoint = await fs.readFile(endpointFile, "utf8");
         await expect(chromium.connect(endpoint, { timeout: 1_000 })).rejects.toThrow();
       } finally {
