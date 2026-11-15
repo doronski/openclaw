@@ -18,6 +18,9 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  # Personal forks have no organization maintainer team. Keep App authentication
+  # whenever configured, and fail closed for organizations without App credentials.
+  LABELER_USE_GITHUB_TOKEN: ${{ github.event.repository.fork && github.event.repository.owner.type == 'User' && secrets.GH_APP_PRIVATE_KEY == '' && secrets.GH_APP_PRIVATE_KEY_FALLBACK == '' }}
 
 permissions: {}
 
@@ -37,6 +40,7 @@ jobs:
       cancel-in-progress: true
     permissions:
       contents: read
+      issues: write
       pull-requests: write
     runs-on: ubuntu-24.04
     steps:
@@ -50,6 +54,7 @@ jobs:
           sparse-checkout-cone-mode: false
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
         id: app-token
+        if: env.LABELER_USE_GITHUB_TOKEN != 'true'
         continue-on-error: true
         with:
           app-id: "2729701"
@@ -74,13 +79,13 @@ jobs:
         if: ${{ github.event.action != 'edited' || github.event.changes.base }}
         with:
           configuration-path: .github/labeler.yml
-          repo-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token }}
+          repo-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token || (env.LABELER_USE_GITHUB_TOKEN == 'true' && github.token) }}
           sync-labels: true
       - name: Apply PR size label
         if: ${{ github.event.action != 'edited' || github.event.changes.base }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
-          github-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token }}
+          github-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token || (env.LABELER_USE_GITHUB_TOKEN == 'true' && github.token) }}
           script: |
             const pullRequest = context.payload.pull_request;
             if (!pullRequest) {
@@ -117,10 +122,10 @@ jobs:
               labelNames: new Set(currentLabels.map((label) => label.name)),
             });
       - name: Apply maintainer label
-        if: ${{ github.event.action != 'edited' }}
+        if: ${{ github.event.action != 'edited' && github.event.repository.owner.type == 'Organization' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
-          github-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token }}
+          github-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token || (env.LABELER_USE_GITHUB_TOKEN == 'true' && github.token) }}
           script: |
             const login = context.payload.pull_request?.user?.login;
             if (!login) {
@@ -159,7 +164,7 @@ jobs:
         if: ${{ github.event.action != 'edited' || github.event.changes.title }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
-          github-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token }}
+          github-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token || (env.LABELER_USE_GITHUB_TOKEN == 'true' && github.token) }}
           script: |
             const pullRequest = context.payload.pull_request;
             if (!pullRequest) {
@@ -219,7 +224,7 @@ jobs:
         if: ${{ github.event.action != 'edited' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
-          github-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token }}
+          github-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token || (env.LABELER_USE_GITHUB_TOKEN == 'true' && github.token) }}
           script: |
             const pullRequest = context.payload.pull_request;
             if (!pullRequest) {
@@ -313,22 +318,21 @@ jobs:
                 return true;
               }
 
-              let isMaintainer = false;
-              try {
-                const membership = await github.rest.teams.getMembershipForUserInOrg({
-                  org: context.repo.owner,
-                  team_slug: "maintainer",
-                  username: authorLogin,
-                });
-                isMaintainer = membership?.data?.state === "active";
-              } catch (error) {
-                if (error?.status !== 404) {
-                  throw error;
+              if (context.payload.repository.owner.type === "Organization") {
+                try {
+                  const membership = await github.rest.teams.getMembershipForUserInOrg({
+                    org: context.repo.owner,
+                    team_slug: "maintainer",
+                    username: authorLogin,
+                  });
+                  if (membership?.data?.state === "active") {
+                    return true;
+                  }
+                } catch (error) {
+                  if (error?.status !== 404) {
+                    throw error;
+                  }
                 }
-              }
-
-              if (isMaintainer) {
-                return true;
               }
 
               try {
@@ -426,6 +430,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
+      issues: write
       pull-requests: write
     runs-on: ubuntu-24.04
     steps:
@@ -437,6 +442,7 @@ jobs:
           sparse-checkout-cone-mode: false
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
         id: app-token
+        if: env.LABELER_USE_GITHUB_TOKEN != 'true'
         continue-on-error: true
         with:
           app-id: "2729701"
@@ -458,7 +464,7 @@ jobs:
       - name: Backfill PR labels
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
-          github-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token }}
+          github-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token || (env.LABELER_USE_GITHUB_TOKEN == 'true' && github.token) }}
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
@@ -497,6 +503,9 @@ jobs:
             }
 
             async function resolveMaintainerLabel(login) {
+              if (context.payload.repository.owner.type !== "Organization") {
+                return null;
+              }
               if (maintainerCache.has(login)) {
                 return maintainerCache.get(login);
               }
@@ -670,6 +679,7 @@ jobs:
           sparse-checkout-cone-mode: false
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
         id: app-token
+        if: env.LABELER_USE_GITHUB_TOKEN != 'true'
         continue-on-error: true
         with:
           app-id: "2729701"
@@ -685,9 +695,10 @@ jobs:
           permission-issues: write
           permission-members: read
       - name: Apply maintainer label
+        if: github.event.repository.owner.type == 'Organization'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
-          github-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token }}
+          github-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token || (env.LABELER_USE_GITHUB_TOKEN == 'true' && github.token) }}
           script: |
             const login = context.payload.issue?.user?.login;
             if (!login) {
@@ -725,7 +736,7 @@ jobs:
       - name: Apply beta-blocker title label
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
-          github-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token }}
+          github-token: ${{ steps.app-token.outputs.token || steps.app-token-fallback.outputs.token || (env.LABELER_USE_GITHUB_TOKEN == 'true' && github.token) }}
           script: |
             const issue = context.payload.issue;
             if (!issue || issue.pull_request) {
