@@ -36,6 +36,10 @@ import { runInDetachedAsyncContext } from "../../shared/detached-async-context.j
 import { isInternalRouteContext } from "../../utils/delivery-context.shared.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel-constants.js";
 import { createToolTurnHandoff } from "../agent-tools.abort.js";
+import { resolveRecordedRequester } from "../subagents/registry/subagent-child-owner-match.js";
+import { getSubagentRunsForRequesterSession } from "../subagents/registry/subagent-registry-memory.js";
+import { retainYieldedRunContinuation } from "../subagents/registry/subagent-registry-run-pause.js";
+import { isYieldedSubagentRun } from "../subagents/registry/subagent-run-liveness.js";
 import { jsonResult, ToolInputError } from "./common.js";
 import { getGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import type { SessionsYieldCallback } from "./sessions-yield-tool.js";
@@ -98,6 +102,7 @@ export async function handoffSessionTool(
   }
   pending.add(operation);
   const handoffSettled = createDeferredCore();
+  const releaseContinuations: Array<() => void> = [];
   let continuation:
     | Awaited<ReturnType<typeof captureOperatorToolGatewayContinuationContext>>
     | Awaited<ReturnType<typeof captureOperatorToolGatewayRequestContinuationContext>> = undefined;
@@ -164,6 +169,29 @@ export async function handoffSessionTool(
     continuation.assertCurrent();
     assertSessionControllerOperation(operation);
     params.signal?.throwIfAborted();
+    if (params.retainRequester) {
+      const requester = continuation;
+      const signal =
+        execRequestAbortSignal(params.requestOwners, operation.abortSignal) ??
+        operation.abortSignal;
+      const assertCurrent = () => {
+        signal.throwIfAborted();
+        requester.assertCurrent();
+      };
+      for (const child of getSubagentRunsForRequesterSession(caller.sessionKey)) {
+        if (
+          child.waitForMessage &&
+          isYieldedSubagentRun(child) &&
+          resolveRecordedRequester(child) === caller.agentId &&
+          child.completionRequesterSessionId === target.sessionId &&
+          child.completionRequesterLifecycleRevision === target.lifecycleRevision
+        ) {
+          // The foreground reply may finish normally to release its plugin holds.
+          // Its accepted handoff still owns a continuation through the result wake.
+          releaseContinuations.push(retainYieldedRunContinuation(child, assertCurrent));
+        }
+      }
+    }
     if (params.fenceSuccessors) {
       registerReplyOperationSuccessorBarrier({
         operation,
@@ -339,6 +367,9 @@ export async function handoffSessionTool(
         })
         .finally(() => {
           handoffSettled.resolve(undefined);
+          for (const release of releaseContinuations) {
+            release();
+          }
           retained.release();
         }),
     );
@@ -347,6 +378,9 @@ export async function handoffSessionTool(
   } catch (error) {
     handoffSettled.resolve(undefined);
     pending.delete(operation);
+    for (const release of releaseContinuations) {
+      release();
+    }
     continuation?.release();
     throw error;
   }
