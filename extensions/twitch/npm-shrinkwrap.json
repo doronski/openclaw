@@ -11,7 +11,7 @@
         "@twurple/api": "8.1.4",
         "@twurple/auth": "8.1.4",
         "@twurple/chat": "8.1.4",
-        "zod": "4.4.3"
+        "zod": "4.6.6"
       }
     },
     "node_modules/@d-fischer/cache-decorators": {
@@ -235,21 +235,6 @@
         "@types/node": "*"
       }
     },
-    "node_modules/@types/ws/node_modules/@types/node": {
-      "version": "26.1.0",
-      "resolved": "https://registry.npmjs.org/@types/node/-/node-26.1.0.tgz",
-      "integrity": "sha512-O0A1G3xPGy4w7AgQdAQYUlQ+BKk2Oovw8eRpofyp5KdBZULnbe+WqaOVNrm705SHphCiG4XHsACrSmPu1f+Kgw==",
-      "license": "MIT",
-      "dependencies": {
-        "undici-types": "~8.3.0"
-      }
-    },
-    "node_modules/@types/ws/node_modules/undici-types": {
-      "version": "8.3.0",
-      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-8.3.0.tgz",
-      "integrity": "sha512-j375ScV60dom+YkPFIfTLcOiPxkN/buHz5GobjLhixFuANaNs3C9l4GmrWqejgXWJ7BbJcFYpTEUkS1Ge8bpZQ==",
-      "license": "MIT"
-    },
     "node_modules/ircv3": {
       "version": "0.33.1",
       "resolved": "https://registry.npmjs.org/ircv3/-/ircv3-0.33.1.tgz",
@@ -320,9 +305,9 @@
       }
     },
     "node_modules/zod": {
-      "version": "4.4.3",
-      "resolved": "https://registry.npmjs.org/zod/-/zod-4.4.3.tgz",
-      "integrity": "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ==",
+      "version": "4.6.6",
+      "resolved": "https://registry.npmjs.org/zod/-/zod-4.6.6.tgz",
+      "integrity": "sha512-4UmzQUF5fxvfcYHlbjBmejU+w+hbDnWFx4aS8kBx7nPBHcO2SqPbpAG8snbdg+Xse4pRefR98hgjFgIMCI/UhA==",
       "license": "MIT",
       "funding": {
         "url": "https://github.com/sponsors/colinhacks"

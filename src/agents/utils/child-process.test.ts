@@ -16,21 +16,50 @@ describe.skipIf(process.platform === "win32")("waitForChildProcess", () => {
     child = undefined;
   });
 
-  it("drains active descendant output after the parent exits", async () => {
-    const command =
-      'printf "HEAD\\n"; ( for i in 1 2 3 4 5 6; do sleep 0.05; printf "TICK$i\\n"; done ) &';
-    child = spawn("/bin/sh", ["-c", command], {
-      stdio: ["ignore", "pipe", "pipe"],
-      detached: true,
-    });
-    let output = "";
-    child.stdout.on("data", (chunk: Buffer) => {
-      output += chunk.toString();
-    });
+  it("drains active descendant output until both pipes are idle after the parent exits", async () => {
+    vi.useFakeTimers();
+    try {
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      const fakeChild = Object.assign(new EventEmitter(), {
+        stdout,
+        stderr,
+      }) as unknown as ChildProcess;
+      let output = "";
+      for (const stream of [stdout, stderr]) {
+        stream.on("data", (chunk: Buffer) => {
+          output += chunk.toString();
+        });
+      }
 
-    await expect(waitForChildProcess(child)).resolves.toBe(0);
-    expect(output).toContain("HEAD");
-    expect(output).toContain("TICK6");
+      let settled = false;
+      const completion = waitForChildProcess(fakeChild).then((code) => {
+        settled = true;
+        return code;
+      });
+      stdout.write("HEAD\n");
+      fakeChild.emit("exit", 0);
+
+      // Keep arrivals inside the idle grace without relying on OS scheduling.
+      // Alternating pipes proves that either stream renews the drain window.
+      for (let tick = 1; tick <= 6; tick++) {
+        await vi.advanceTimersByTimeAsync(50);
+        expect(settled).toBe(false);
+        const stream = tick % 2 === 1 ? stdout : stderr;
+        stream.write(`TICK${tick}\n`);
+      }
+
+      await vi.advanceTimersByTimeAsync(99);
+      expect(settled).toBe(false);
+      expect(output).toBe("HEAD\nTICK1\nTICK2\nTICK3\nTICK4\nTICK5\nTICK6\n");
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(completion).resolves.toBe(0);
+      expect(stdout.destroyed).toBe(true);
+      expect(stderr.destroyed).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("releases a quiet inherited pipe after the idle grace", async () => {

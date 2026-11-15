@@ -183,7 +183,7 @@ const defaultPublicDeprecatedExportsByEntrypointBudget = Object.freeze({
   "webhook-ingress": 2,
   "webhook-path": 2,
   zalouser: 5,
-  zod: 282,
+  zod: 303,
 });
 
 export function readPluginSdkSurfaceBudgets(env = process.env) {
@@ -195,17 +195,17 @@ export function readPluginSdkSurfaceBudgets(env = process.env) {
     ),
     publicExports: readPluginSdkSurfaceBudgetEnv(
       "OPENCLAW_PLUGIN_SDK_MAX_PUBLIC_EXPORTS",
-      10468,
+      10489,
       env,
     ),
     publicFunctionExports: readPluginSdkSurfaceBudgetEnv(
       "OPENCLAW_PLUGIN_SDK_MAX_PUBLIC_FUNCTION_EXPORTS",
-      5222,
+      5236,
       env,
     ),
     publicDeprecatedExports: readPluginSdkSurfaceBudgetEnv(
       "OPENCLAW_PLUGIN_SDK_MAX_PUBLIC_DEPRECATED_EXPORTS",
-      3265,
+      3286,
       env,
     ),
     publicWildcardReexports: readPluginSdkSurfaceBudgetEnv(
