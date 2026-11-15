@@ -60,17 +60,23 @@ suite.define(() => {
       const cdp = await ownContext.newCDPSession(crashed);
       const { targetInfo } = await cdp.send("Target.getTargetInfo");
       const crashEvent = crashed.waitForEvent("crash");
+      console.error("[ui-browser-lifetime] dispatching Page.crash");
       const crashCommand = cdp.send("Page.crash").catch(() => {});
+      console.error("[ui-browser-lifetime] waiting for page crash event");
       await crashEvent;
       // The raw CDP command can stay pending until its crashed target closes.
+      console.error("[ui-browser-lifetime] closing crashed page");
       await crashed.close();
+      console.error("[ui-browser-lifetime] joining Page.crash command");
       await crashCommand;
       const readCrash = () => {
         const directory = process.env.OPENCLAW_UI_E2E_DIAGNOSTIC_DIR;
         const entry = fs.existsSync(directory) && fs.readdirSync(directory).find(name => name.startsWith("failure-chromium-"));
         return entry ? fs.readFileSync(directory + "/" + entry + "/failure.public.json", "utf8") : "";
       };
+      console.error("[ui-browser-lifetime] waiting for native crash diagnostic");
       await expect.poll(readCrash).not.toBe("");
+      console.error("[ui-browser-lifetime] native crash diagnostic observed");
       const publicCrash = readCrash();
       expect(JSON.parse(publicCrash)).toMatchObject({
         kind: "chromium-target-crashes", dropped: 0,
