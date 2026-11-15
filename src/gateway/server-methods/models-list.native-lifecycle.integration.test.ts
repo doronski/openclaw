@@ -54,6 +54,9 @@ it.for([false, true])(
     const model = (id: string, owner = provider) => modelRow(owner, id);
     const harness = "native-lifecycle-runtime";
     const requests: string[] = [];
+    // Receipt phases and fixture identities explain an unexpected lookup without exposing inputs.
+    let nativePhase = "startup";
+    const nativeDiscoveries: Array<{ phase: string; origin: string }> = [];
     const nativeRequests = (from = 0) =>
       requests.slice(from).filter((path) => path === "/native/models");
     const nativeModelId = "native-account-only";
@@ -93,6 +96,13 @@ it.for([false, true])(
       requests.push(request.url ?? "");
       response.setHeader("Content-Type", "application/json");
       if (request.url === "/native/models") {
+        nativeDiscoveries.push({
+          phase: nativePhase,
+          origin: String(request.headers["x-native-fixture-origin"] ?? "missing").slice(0, 1024),
+        });
+        if (nativeDiscoveries.length > 12) {
+          nativeDiscoveries.shift();
+        }
         nativeRequested.resolve();
         void nativeReleased.promise.then(() => response.end(JSON.stringify(nativeRows())));
       } else if (request.url === "/provider/models" || request.url === "/other/models") {
@@ -145,11 +155,25 @@ it.for([false, true])(
         `module.exports = {
       id: ${JSON.stringify(provider)}, register(api) {
         const observed = new WeakSet();
+        const registrationId = require("node:crypto").randomUUID();
+        const configIds = new WeakMap();
+        let nextConfigId = 0;
         api.registerAgentHarness({
           id: ${JSON.stringify(harness)}, label: "Native fixture", authBootstrap: "harness",
           supports: () => ({ supported: true }), runAttempt: async () => ({ ok: false, error: "unused" }),
           async loadModelCatalog(params) {
-            const response = await fetch(${JSON.stringify(`${baseUrl}/native/models`)});
+            if (!configIds.has(params.config)) configIds.set(params.config, ++nextConfigId);
+            const { isMainThread, threadId } = require("node:worker_threads");
+            // Retain function names only: paths, config, credentials and environments stay private.
+            const frames = (new Error().stack || "").split("\\n").slice(1, 9)
+              .flatMap(line => /^\\s*at (?:async )?([A-Za-z_$][\\w.$<>]*)\\s+\\(/.exec(line)?.[1] || [])
+              .slice(0, 6);
+            const response = await fetch(${JSON.stringify(`${baseUrl}/native/models`)}, {
+              headers: { "x-native-fixture-origin": JSON.stringify({
+                runtime: isMainThread ? "parent" : "worker", threadId,
+                registrationId, configId: configIds.get(params.config), frames,
+              }) },
+            });
             if (!response.ok) throw new Error("Native catalog fixture unavailable");
             const rows = await response.json();
             observed.add(params.config);
@@ -244,6 +268,7 @@ it.for([false, true])(
           results.forEach(check);
         };
         expect(nativeRequests()).toHaveLength(0);
+        nativePhase = "initial catalog reads";
         const firstReads = await Promise.all([list(), list()]);
         await withinTest(nativeRequested.promise, signal);
         if (!withProviderCredentials) {
@@ -289,6 +314,7 @@ it.for([false, true])(
           expect(requests.toSorted()).toEqual(["/native/models", "/provider/models"]);
           // Provider publication can clear pending before the native renewal starts.
           const refresh = (name: string) => {
+            nativePhase = name;
             nativeName = name;
             return waitForCatalogPublication({
               signal,
@@ -306,11 +332,15 @@ it.for([false, true])(
           failedProviderCatalog = false;
           await refresh("Native model after recovered provider refresh");
           expect((await list()).models).toContainEqual(model("provider-account"));
+          nativePhase = "opaque auth refresh before catalog demand";
           const beforeOpaqueReload = requests.length;
           nativeReleased = createDeferred();
           nativeRequested = createDeferred();
           await client.request("models.authRefresh", { agentId: "main", operation: "logout" });
-          expect(requests.slice(beforeOpaqueReload)).not.toContain("/native/models");
+          expect(requests.slice(beforeOpaqueReload), JSON.stringify(nativeDiscoveries)).not.toContain(
+            "/native/models",
+          );
+          nativePhase = "first opaque catalog read";
           const firstOpaqueRead = await list();
           await withinTest(nativeRequested.promise, signal);
           const beforeOpaqueReads = requests.length;
