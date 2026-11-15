@@ -141,9 +141,37 @@ describe("standalone runtime process build graph", () => {
       const inputs = Object.keys(result.metafile.inputs).map((input) =>
         input.replaceAll("\\", "/"),
       );
-      expect(
-        inputs.filter((input) => forbiddenInputs.some((pattern) => pattern.test(input))),
-      ).toEqual([]);
+      const unexpected = inputs.filter((input) =>
+        forbiddenInputs.some((pattern) => pattern.test(input)),
+      );
+      const dependencyChain: string[] = [];
+      if (unexpected.length > 0) {
+        const graph = new Map(
+          Object.entries(result.metafile.inputs).map(([input, details]) => [
+            input.replaceAll("\\", "/"),
+            details,
+          ]),
+        );
+        const parents = new Map<string, string | undefined>([
+          [entry.replaceAll("\\", "/"), undefined],
+        ]);
+        // Map iteration visits newly added inputs in discovery order.
+        for (const input of parents.keys()) {
+          if (unexpected.includes(input)) {
+            for (let current: string | undefined = input; current; current = parents.get(current)) {
+              dependencyChain.unshift(current);
+            }
+            break;
+          }
+          for (const imported of graph.get(input)?.imports ?? []) {
+            const target = imported.path.replaceAll("\\", "/");
+            if (!imported.external && !parents.has(target)) {
+              parents.set(target, input);
+            }
+          }
+        }
+      }
+      expect(unexpected, dependencyChain.join(" -> ")).toEqual([]);
       if (name === "infra/sqlite-source-revision.worker") {
         expect(
           inputs.filter((input) =>
