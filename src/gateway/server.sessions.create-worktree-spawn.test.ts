@@ -1009,7 +1009,15 @@ test.each(["archive", "stale-child"] as const)(
           parentSessionId: parent.sessionId,
           worktree: { repoRoot: repository },
         });
-        expect(child.pendingWorktree).toBeUndefined();
+        expect(
+          child.pendingWorktree,
+          JSON.stringify({
+            status: child.status ?? "unset",
+            hasRunError: Boolean(child.lastRunError),
+            workspaceOwnerChanged:
+              child.lastRunError?.includes("Session changed while preparing its project") ?? false,
+          }),
+        ).toBeUndefined();
         const owned = (await managedWorktrees.findLiveByOwner("session", key))!;
         expect(owned.id).toBe(child.worktree?.id);
         expect(await readReadme(owned.path)).toBe("selected-project\n");
