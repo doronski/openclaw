@@ -12,7 +12,11 @@ import {
 import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
 import { mutateSubagentRuns, SubagentRegistryWriteError } from "./subagent-registry-persistence.js";
 import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
-import { isSameSubagentRunOwner, latestSubagentRun } from "./subagent-run-generation.js";
+import {
+  getSubagentRunRuntimeKey,
+  isSameSubagentRunOwner,
+  latestSubagentRun,
+} from "./subagent-run-generation.js";
 import { isYieldedSubagentRun } from "./subagent-run-liveness.js";
 import { shouldSuppressSubagentSessionEffects } from "./subagent-session-effects-policy.js";
 
@@ -20,6 +24,38 @@ const COLLECTOR_YIELD_ERROR =
   "Collector yielded under a build that predates the admission gate, so it has no recorded collectorCompletion and nothing can continue it. Rerun the collector and have it end its turn normally instead of calling sessions_yield.";
 
 type YieldedRunContinuation = { state: "continuable" } | { state: "unreachable"; error: string };
+
+const retainedContinuations = new WeakMap<object, Set<() => void>>();
+
+/** An accepted host handoff can continue this exact child after its requester turn ends. */
+export function retainYieldedRunContinuation(
+  entry: SubagentRunRecord,
+  assertCurrent: () => void,
+): () => void {
+  assertCurrent();
+  const key = getSubagentRunRuntimeKey(entry);
+  const sources = retainedContinuations.get(key) ?? new Set<() => void>();
+  sources.add(assertCurrent);
+  retainedContinuations.set(key, sources);
+  return () => {
+    sources.delete(assertCurrent);
+    if (sources.size === 0) {
+      retainedContinuations.delete(key);
+    }
+  };
+}
+
+function hasRetainedContinuation(entry: SubagentRunRecord): boolean {
+  for (const assertCurrent of retainedContinuations.get(getSubagentRunRuntimeKey(entry)) ?? []) {
+    try {
+      assertCurrent();
+      return true;
+    } catch {
+      // Revoked handoffs cannot keep an otherwise unreachable message wait alive.
+    }
+  }
+  return false;
+}
 
 /**
  * Owns "can a continuation still resume this yielded run?" for a row where
@@ -30,7 +66,7 @@ export function resolveYieldedRunContinuation(
   entry: SubagentRunRecord,
   requesterEnded = false,
 ): YieldedRunContinuation {
-  if (entry.waitForMessage && requesterEnded) {
+  if (entry.waitForMessage && requesterEnded && !hasRetainedContinuation(entry)) {
     return {
       state: "unreachable",
       error:
