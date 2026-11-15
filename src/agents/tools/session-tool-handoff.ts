@@ -172,7 +172,8 @@ export async function handoffSessionTool(
     if (params.retainRequester) {
       const requester = continuation;
       const signal =
-        execRequestAbortSignal(params.requestOwners, operation.abortSignal) ?? operation.abortSignal;
+        execRequestAbortSignal(params.requestOwners, operation.abortSignal) ??
+        operation.abortSignal;
       const assertCurrent = () => {
         signal.throwIfAborted();
         requester.assertCurrent();
