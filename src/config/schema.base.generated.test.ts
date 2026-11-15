@@ -156,8 +156,7 @@ describe("base config schema", () => {
   });
 
   it("publishes accepted input shapes for transform-backed config fields", () => {
-    const lastTouchedAtBranches = expectAnyOfTypes(["meta", "lastTouchedAt"], ["number", "string"]);
-    expect(lastTouchedAtBranches.every((branch) => Object.keys(branch).length > 0)).toBe(true);
+    expect(schemaAt(BASE_SCHEMA, ["meta", "lastTouchedAt"])?.type).toEqual(["string", "number"]);
 
     for (const path of [
       ["agents", "defaults", "sandbox", "docker", "setupCommand"],

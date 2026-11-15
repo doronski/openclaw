@@ -383,6 +383,30 @@ function readShrinkwrapOverrides() {
   );
 }
 
+function qualifyNestedNpmOverrideSelectors(overrides, nested = false) {
+  if (!isPlainObject(overrides)) {
+    return overrides;
+  }
+  const qualified = new Map();
+  for (const [name, spec] of Object.entries(overrides)) {
+    const version = typeof spec === "string" ? spec : spec?.["."];
+    const bareName = !name.startsWith("$") && !name.includes("@", name.startsWith("@") ? 1 : 0);
+    const selector =
+      nested &&
+      name !== "." &&
+      bareName &&
+      typeof version === "string" &&
+      EXACT_VERSION_PATTERN.test(version)
+        ? `${name}@${version}`
+        : name;
+    if (qualified.has(selector)) {
+      throw new Error(`npm override selector collision: ${selector}`);
+    }
+    qualified.set(selector, name === "." ? spec : qualifyNestedNpmOverrideSelectors(spec, true));
+  }
+  return Object.fromEntries(qualified);
+}
+
 function packageJsonForShrinkwrap(packageJson, shrinkwrapOverrides) {
   const normalized = { ...packageJson };
   delete normalized.devDependencies;
@@ -397,7 +421,11 @@ function packageJsonForShrinkwrap(packageJson, shrinkwrapOverrides) {
       ),
     );
   }
-  normalized.overrides = mergeOverrides(packageJson.overrides, shrinkwrapOverrides, {});
+  // npm otherwise applies a nested fork pin to every requested major. Keep the
+  // internal bare-key policy intact and guard selectors only at the npm boundary.
+  normalized.overrides = qualifyNestedNpmOverrideSelectors(
+    mergeOverrides(packageJson.overrides, shrinkwrapOverrides, {}),
+  );
   return normalized;
 }
 
